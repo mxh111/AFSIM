@@ -1,37 +1,50 @@
-# AFSIM_LLM 初版架构
+# AFSIM_LLM 架构
 
-## 目标
+## 定位
 
-当前版本先实现一个小规模、可运行的军事仿真平台骨架，用于验证“浏览器态势显示 + LLM 指挥核心 + 仿真控制 + AFSIM 适配层”的闭环。
+AFSIM_LLM 是 AFSIM 的 Web 编排层，不替代 Warlock、Mystic，也不再维护自绘 2D/3D 战场地图。网页端承担场景设计、脚本生成、运行控制、输出采集、窗口嵌入和大模型分析；AFSIM 原生工具承担地图、三维和回放显示。
 
-## 模块
+## 当前闭环
 
-- `app/main.py`：FastAPI 应用入口，提供 REST API、WebSocket、静态页面。
-- `app/services/simulation.py`：轻量仿真内核，负责仿真时间、目标运动、雷达探测、事件记录。
-- `app/services/llm.py`：硅基流动 OpenAI 兼容调用适配器。未配置 API Key 时自动使用本地规则指挥官。
-- `app/services/afsim_adapter.py`：AFSIM 集成适配层，当前可导出初版草案文件，后续可接入真实 runner、grammar 校验和结果解析。
-- `app/static/`：浏览器端主控界面，包含二维态势、图层显隐、装备列表、事件日志、LLM 指挥台。
-- `configs/sample_scenario.json`：初始想定，覆盖雷达、预警机、临近空间目标、干扰源、卫星、图层。
-- `app/services/storage.py`：SQLite 事件、快照、报告存储。
+```mermaid
+flowchart LR
+  A["网页场景设计器"] --> B["生成 scenario.txt"]
+  B --> C["mission.exe 运行"]
+  C --> D["采集 log / evt / aer"]
+  B --> E["Warlock 原生地图"]
+  D --> F["Mystic AER 回放"]
+  D --> G["硅基流动 LLM 分析"]
+  E --> H["网页原生窗口显示桥"]
+  F --> H
+```
 
-## LLM 指挥安全边界
+## 后端模块
 
-指挥智能体只允许输出白名单动作：
+- `app/main.py`：FastAPI 路由、静态页面、AFSIM API。
+- `app/services/afsim_design.py`：网页场景设计转 AFSIM 输入文件。
+- `app/services/afsim_runner.py`：发现 demo、运行 `mission.exe`、启动 Warlock/Mystic、采集输出。
+- `app/services/afsim_parser.py`：解析 scenario/include 中的平台、阵营、类型和位置。
+- `app/services/native_display.py`：检测 Warlock/Mystic 本机窗口，并为网页提供原生窗口截图。
+- `app/services/llm.py`：硅基流动 OpenAI 兼容 API 适配和本地兜底分析。
+- `app/static/`：AFSIM 原生工作台前端。
 
-- `set_heading`
-- `set_speed`
-- `set_altitude`
-- `set_sensor`
-- `assign_track`
-- `annotate`
-- `no_op`
+## 原生显示方案
 
-平台不会执行真实世界作战命令，也不会提供武器释放或杀伤动作。后续接入真实 AFSIM 时也应保持“模型建议、系统校验、人工确认、仿真执行”的链路。
+当前提供两种模式：
 
-## 后续路线
+- 本机窗口截图：后端只匹配标题包含 `Warlock` 或 `Mystic` 的窗口，网页定时刷新截图，适合单机落地演示和调试。
+- 外部交互流：配置 `AFSIM_NATIVE_STREAM_URL` 后，中间工作区以 iframe 嵌入 noVNC、RDP 网关或 WebRTC 桌面流。
 
-1. 接入真实 AFSIM `bin`、scenario 文件和输出解析。
-2. 将 Canvas 二维态势替换或扩展为 Cesium/WebGL 三维数字地球。
-3. 引入数据库适配层，支持 MySQL/SQL Server/国产数据库。
-4. 建立模型库、素材库、30+ 图层模板和批量导入。
-5. 增加 DOCX 复盘模板、xlsx/csv 导出、安全审计与脱敏。
+本机截图模式是只读显示桥；完整鼠标键盘交互需要外部桌面流服务。
+
+## 安全边界
+
+LLM 只用于封闭仿真工程分析、场景检查和复盘建议。系统不执行真实世界作战命令，不输出武器释放、杀伤或规避拦截等现实伤害性指令。生成场景用于 AFSIM 仿真验证。
+
+## 下一步
+
+- 将 AFSIM base_types、demo 类型库整理为可选模板库。
+- 增加更完整的航路编辑、批量平台导入和场景版本管理。
+- 深入解析 `.evt/.aer`，形成时间索引态势数据。
+- 接入正式 noVNC/RDP/WebRTC 服务，提供可交互的网页内嵌 Warlock/Mystic。
+- 增加数据库化场景库、运行库、复盘库和权限审计。

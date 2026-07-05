@@ -4,3 +4,4 @@ httpx==0.28.1
 pydantic==2.10.4
 python-multipart==0.0.20
 eval-type-backport==0.2.2
+Pillow==10.2.0

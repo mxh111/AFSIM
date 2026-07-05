@@ -1,87 +1,79 @@
 # AFSIM_LLM
 
-AFSIM_LLM 是一个面向 AFSIM 二次开发的初始版本工程，目标是逐步建设“以大模型为核心指挥”的浏览器化军事仿真平台。
+AFSIM_LLM 是一个面向 AFSIM 二次开发的本机 Web 工作台。当前版本已经把主线改为 AFSIM 原生路线：网页负责场景设计、运行调度、输出采集和大模型分析；地图/三维/回放以 Warlock、Mystic 等 AFSIM 原生工具为准。
 
-当前版本已经实现：
+## 已完成能力
 
-- 浏览器主控界面、二维态势图、图层显隐、装备列表、事件日志。
-- 轻量仿真内核：仿真启动/暂停/继续/单步/加速/减速/复位、目标运动、雷达探测、干扰影响。
-- 大模型指挥接口：硅基流动 OpenAI 兼容 API 调用，未配置 Key 时自动使用本地规则指挥官。
-- 数据存储：SQLite 事件、快照、复盘报告。
-- AFSIM 适配层：识别本机 AFSIM 目录，并导出初版 AFSIM scenario 草案。
+- 网页端场景设计器：配置平台、阵营、类型、图标、经纬度、高度、速度、航向和航路终点。
+- 生成真实 AFSIM 输入文件：写入 `generated_scenarios/<scenario_id>/scenario.txt`。
+- 调用 AFSIM `mission.exe` 运行生成场景或官方 demo。
+- 自动采集 `.log`、`.evt`、`.aer` 到 `runtime/afsim_runs`。
+- 网页按钮启动 Warlock 打开生成场景或官方 demo。
+- 网页按钮启动 Mystic 打开最近一次 `.aer` 回放。
+- 网页中显示 Warlock/Mystic 原生窗口截图；如果配置 `AFSIM_NATIVE_STREAM_URL`，可切换为 noVNC/RDP/WebRTC 等交互式嵌入流。
+- 调用硅基流动 OpenAI 兼容 API，对 AFSIM 运行结果做仿真工程分析。
 
-## 快速启动
+## 启动
 
 ```powershell
 cd D:\AFISM\AFSIM\AFSIM_LLM
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
-```
-
-如默认源或清华源被代理影响，可以使用阿里云源：
-
-```powershell
-$env:NO_PROXY="*"
-python -m pip install -r requirements.txt --index-url https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com
-```
-
-浏览器打开：
-
-```text
-http://127.0.0.1:8000
-```
-
-如果 8000 端口已被占用，可以换端口，例如：
-
-```powershell
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8766
-```
-
-也可以使用脚本：
-
-```powershell
 .\scripts\run_dev.ps1
 ```
 
-如果当前机器暂时无法安装 FastAPI/uvicorn 依赖，可以用轻量预览服务器先打开界面：
-
-```powershell
-C:\Users\14191\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe .\scripts\run_preview.py --host 127.0.0.1 --port 8000
-```
-
-预览服务器提供主要演示 API，不包含 FastAPI 的 WebSocket；前端会自动切换为 0.5 秒轮询。
-
-## 配置硅基流动
-
-复制 `.env.example` 为 `.env` 或在 PowerShell 中设置环境变量：
-
-```powershell
-$env:SILICONFLOW_API_KEY="你的 API Key"
-$env:SILICONFLOW_BASE_URL="https://api.siliconflow.cn/v1"
-$env:SILICONFLOW_MODEL="Pro/zai-org/GLM-4.7"
-```
-
-接口采用 `/v1/chat/completions` OpenAI 兼容格式。模型名可按硅基流动控制台中实际可用模型调整。
-
-## 项目结构
+然后打开：
 
 ```text
-app/
-  main.py                 # FastAPI API、WebSocket、静态页面入口
-  models.py               # 场景、目标、图层、命令数据模型
-  services/
-    simulation.py         # 轻量仿真内核
-    llm.py                # 硅基流动 / 本地规则指挥官
-    afsim_adapter.py      # AFSIM 草案导出与集成探测
-    reports.py            # 复盘报告
-    storage.py            # SQLite 存储
-  static/                 # 浏览器界面
-configs/sample_scenario.json
-docs/ARCHITECTURE.md
-tests/
+http://127.0.0.1:8766
 ```
 
-## 说明
+也可以手动启动：
 
-当前是“小规模初始版本”，不是完整 AFSIM 替代品。它先把平台主线跑通：场景输入、仿真控制、态势显示、LLM 指挥建议、人工/自动应用、复盘导出、AFSIM 文件草案。后续可以沿 `docs/ARCHITECTURE.md` 中路线接入真实 AFSIM runner、Cesium/WebGL 三维数字地球、数据库集群、模型库和安全审计。
+```powershell
+python -m pip install -r requirements.txt --index-url https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8766
+```
+
+## 配置
+
+复制 `.env.example` 为 `.env`，按本机路径调整：
+
+```text
+AFSIM_LLM_HOST=127.0.0.1
+AFSIM_LLM_PORT=8766
+AFSIM_ROOT=D:\AFISM\AFSIM\am-2.9.0-win64.part1\afsim-2.9.0-win64
+AFSIM_NATIVE_STREAM_URL=
+SILICONFLOW_BASE_URL=https://api.siliconflow.cn/v1
+SILICONFLOW_MODEL=deepseek-ai/DeepSeek-V3
+SILICONFLOW_API_KEY=你的Key
+```
+
+`AFSIM_NATIVE_STREAM_URL` 留空时，网页使用本机窗口截图显示 Warlock/Mystic；配置为 noVNC/RDP/WebRTC 页面地址时，中间工作区会以 iframe 方式嵌入该交互流。
+
+## 使用流程
+
+1. 在左侧“场景设计器”编辑平台。
+2. 点击“生成AFSIM场景”，检查中间的 `scenario.txt`。
+3. 点击“运行生成场景”，后端调用 `mission.exe`。
+4. 点击“打开Warlock”，使用 AFSIM 原生地图打开该场景。
+5. 运行后点击“打开Mystic回放”，查看 `.aer`。
+6. 点击“分析最近运行”，让大模型分析输出链路、错误和后续仿真工程步骤。
+
+## 主要接口
+
+- `GET /api/afsim/status`
+- `GET /api/afsim/demos`
+- `GET /api/afsim/designs`
+- `POST /api/afsim/designs`
+- `GET /api/afsim/designs/{scenario_id}`
+- `POST /api/afsim/designs/{scenario_id}/run`
+- `POST /api/afsim/designs/{scenario_id}/launch-map`
+- `POST /api/afsim/run`
+- `POST /api/afsim/launch-map`
+- `POST /api/afsim/launch-3d`
+- `GET /api/afsim/native-display`
+- `GET /api/afsim/native-frame.jpg`
+- `POST /api/afsim/analyze`
+
+## 边界
+
+当前网页不会自绘战场地图，也不再把旧 2D/3D demo 当作主界面。Warlock/Mystic 是权威显示端。内置窗口截图是本机可落地显示桥；若要完整交互式网页内嵌，需要部署 noVNC、RDP 网关或 WebRTC 桌面流，并把地址写入 `AFSIM_NATIVE_STREAM_URL`。

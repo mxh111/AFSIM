@@ -17,8 +17,10 @@ data/
 runtime/
 logs/
 *.log
+node_modules/
 exports/
 reports/
+generated_scenarios/
 *.sqlite3
 .preview_server.pid
 .fastapi_server.pid

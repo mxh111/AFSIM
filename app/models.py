@@ -68,6 +68,44 @@ class SimulationControl(BaseModel):
     step_seconds: float | None = None
 
 
+class AFSimRunRequest(BaseModel):
+    demo_name: str = Field(..., min_length=1, max_length=120)
+    input_file: str | None = None
+    timeout_seconds: int = Field(default=120, ge=5, le=1800)
+
+
+class AFSimRoutePoint(BaseModel):
+    lat: float = Field(..., ge=-90, le=90)
+    lon: float = Field(..., ge=-180, le=180)
+    altitude_m: float = Field(default=0.0, ge=0, le=1000000)
+    speed_kts: float = Field(default=0.0, ge=0, le=8000)
+
+
+class AFSimDesignedPlatform(BaseModel):
+    name: str = Field(..., min_length=1, max_length=64)
+    type_name: str = Field(default="WEB_AIRCRAFT", min_length=1, max_length=80)
+    side: Literal["blue", "red", "green", "neutral"] = "blue"
+    category: str = Field(default="aircraft", max_length=64)
+    icon: str = Field(default="b-747", max_length=64)
+    lat: float = Field(..., ge=-90, le=90)
+    lon: float = Field(..., ge=-180, le=180)
+    altitude_m: float = Field(default=0.0, ge=0, le=1000000)
+    speed_kts: float = Field(default=0.0, ge=0, le=8000)
+    heading_deg: float = Field(default=0.0, ge=0, le=360)
+    route: list[AFSimRoutePoint] = Field(default_factory=list)
+
+
+class AFSimScenarioDesign(BaseModel):
+    name: str = Field(default="web_scenario", min_length=1, max_length=80)
+    description: str = Field(default="", max_length=800)
+    end_time_seconds: int = Field(default=600, ge=1, le=86400)
+    platforms: list[AFSimDesignedPlatform] = Field(default_factory=list)
+
+
+class AFSimGeneratedRunRequest(BaseModel):
+    timeout_seconds: int = Field(default=120, ge=5, le=1800)
+
+
 class CommanderRequest(BaseModel):
     objective: str = Field(..., min_length=2, max_length=1200)
     side: Literal["blue", "red"] = "blue"

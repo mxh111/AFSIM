@@ -94,7 +94,7 @@ class CommanderLLM:
             "temperature": 0.2,
             "max_tokens": 900,
         }
-        async with httpx.AsyncClient(timeout=settings.llm_timeout_seconds) as client:
+        async with httpx.AsyncClient(timeout=settings.llm_timeout_seconds, trust_env=False) as client:
             response = await client.post(
                 url,
                 headers={
@@ -172,3 +172,96 @@ class CommanderLLM:
             summary=f"本地规则已根据目标“{request.objective[:40]}”生成仿真内建议。",
             commands=commands,
         )
+
+    async def analyze_afsim_run(self, run: dict[str, Any]) -> dict[str, Any]:
+        if settings.siliconflow_api_key:
+            try:
+                return await self._siliconflow_afsim_analysis(run)
+            except Exception as exc:
+                fallback = self._local_afsim_analysis(run)
+                fallback["summary"] = f"硅基流动调用失败，已使用本地分析：{exc}"
+                return fallback
+        return self._local_afsim_analysis(run)
+
+    async def _siliconflow_afsim_analysis(self, run: dict[str, Any]) -> dict[str, Any]:
+        try:
+            import httpx
+        except ImportError as exc:
+            raise RuntimeError("httpx is not installed; install requirements.txt before calling SiliconFlow") from exc
+
+        url = f"{settings.siliconflow_base_url.rstrip('/')}/chat/completions"
+        compact = {
+            "demo_name": run.get("demo_name"),
+            "input_file": run.get("input_file"),
+            "returncode": run.get("returncode"),
+            "duration_seconds": run.get("duration_seconds"),
+            "files": run.get("files", []),
+            "summary": run.get("summary", {}),
+            "stdout_tail": str(run.get("stdout", ""))[-5000:],
+            "stderr_tail": str(run.get("stderr", ""))[-5000:],
+        }
+        payload = {
+            "model": settings.siliconflow_model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "你是 AFSIM_LLM 的仿真工程分析智能体。只分析封闭仿真运行结果，"
+                        "输出 JSON，不要 Markdown。格式："
+                        "{\"summary\":\"一句话结论\",\"findings\":[\"问题或发现\"],"
+                        "\"next_steps\":[\"下一步仿真工程建议\"],\"risk_level\":\"low|medium|high\"}。"
+                        "不要提供真实世界作战、武器使用或伤害性建议。"
+                    ),
+                },
+                {"role": "user", "content": json.dumps(compact, ensure_ascii=False)},
+            ],
+            "temperature": 0.2,
+            "max_tokens": 900,
+        }
+        async with httpx.AsyncClient(timeout=settings.llm_timeout_seconds, trust_env=False) as client:
+            response = await client.post(
+                url,
+                headers={
+                    "Authorization": f"Bearer {settings.siliconflow_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
+            response.raise_for_status()
+            data = response.json()
+        text = data["choices"][0]["message"]["content"]
+        parsed = _extract_json(text)
+        return {
+            "source": "siliconflow",
+            "summary": str(parsed.get("summary", "AFSIM 运行结果已分析")),
+            "findings": parsed.get("findings", []),
+            "next_steps": parsed.get("next_steps", []),
+            "risk_level": parsed.get("risk_level", "low"),
+            "raw_text": text,
+        }
+
+    def _local_afsim_analysis(self, run: dict[str, Any]) -> dict[str, Any]:
+        summary = run.get("summary", {})
+        findings: list[str] = []
+        if run.get("returncode") == 0:
+            findings.append("AFSIM mission.exe 返回码为 0，执行链路可用。")
+        else:
+            findings.append(f"AFSIM 返回码为 {run.get('returncode')}，需要检查 stderr 和 log。")
+        if summary.get("completed"):
+            findings.append("日志显示仿真已完成。")
+        if summary.get("fatal"):
+            findings.extend([f"致命错误：{item}" for item in summary.get("fatal", [])[:3]])
+        files = run.get("files", [])
+        findings.append(f"采集到 {len(files)} 个输出文件。")
+        return {
+            "source": "local_rule",
+            "summary": f"AFSIM demo {run.get('demo_name')} / {run.get('input_file')} 已完成基础分析。",
+            "findings": findings,
+            "next_steps": [
+                "将该 demo 的输入文件纳入场景库元数据。",
+                "把 log/aer/evt 输出映射到平台复盘数据结构。",
+                "选择传感器、卫星、电子战等 demo 继续补齐需求对应能力。",
+            ],
+            "risk_level": "low" if run.get("returncode") == 0 else "medium",
+            "raw_text": "",
+        }

@@ -7,15 +7,29 @@ import mimetypes
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.models import CommanderCommand, CommanderRequest
+from app.models import AFSimGeneratedRunRequest, AFSimRunRequest, AFSimScenarioDesign, CommanderCommand, CommanderRequest
 from app.services.afsim_adapter import afsim_available, export_scenario_draft
+from app.services.afsim_design import generate_scenario, list_generated_scenarios, read_generated_scenario
+from app.services.afsim_parser import parse_demo_scenario
+from app.services.afsim_parser import parse_scenario_file
+from app.services.afsim_runner import (
+    discover_demos,
+    launch_generated_warlock,
+    launch_mystic,
+    launch_warlock,
+    list_runs,
+    run_demo,
+    run_generated_scenario,
+    status as afsim_runner_status,
+)
 from app.services.llm import CommanderLLM
+from app.services.native_display import capture_window_jpeg, native_display_status
 from app.services.reports import build_report, write_markdown_report
 from app.services.simulation import DEFAULT_SCENARIO_PATH, SimulationEngine
 from app.services.storage import Storage
@@ -58,13 +72,41 @@ class PreviewHandler(BaseHTTPRequestHandler):
             elif path.startswith("/static/"):
                 self._serve_file(PROJECT_ROOT / "app" / path.lstrip("/"))
             elif path == "/api/health":
-                _json_response(self, {"ok": True, "mode": "preview", "afsim": afsim_available()})
+                _json_response(self, {"ok": True, "mode": "preview", "afsim": afsim_runner_status()})
             elif path == "/api/scenario":
                 _json_response(self, engine.scenario.model_dump())
             elif path == "/api/state":
                 _json_response(self, engine.tick_from_wall_clock().model_dump())
             elif path == "/api/events":
                 _json_response(self, storage.list_events())
+            elif path == "/api/afsim/status":
+                _json_response(self, afsim_runner_status())
+            elif path == "/api/afsim/demos":
+                _json_response(self, discover_demos())
+            elif path == "/api/afsim/runs":
+                _json_response(self, list_runs())
+            elif path == "/api/afsim/designs":
+                _json_response(self, list_generated_scenarios())
+            elif path.startswith("/api/afsim/designs/"):
+                scenario_id = path.removeprefix("/api/afsim/designs/").strip("/")
+                result = read_generated_scenario(scenario_id)
+                result["parsed"] = parse_scenario_file(Path(str(result["scenario_path"])))
+                _json_response(self, result)
+            elif path == "/api/afsim/native-display":
+                _json_response(self, native_display_status(""))
+            elif path == "/api/afsim/native-frame.jpg":
+                query = parse_qs(parsed.query)
+                title = query.get("title", ["Warlock"])[0]
+                self._binary_response(capture_window_jpeg(title), "image/jpeg")
+            elif path == "/api/afsim/scenario":
+                query = parse_qs(parsed.query)
+                _json_response(
+                    self,
+                    parse_demo_scenario(
+                        query.get("demo_name", ["simple_scenario"])[0],
+                        query.get("input_file", [None])[0],
+                    ),
+                )
             else:
                 _json_response(self, {"detail": "not found"}, 404)
         except Exception as exc:
@@ -122,6 +164,48 @@ class PreviewHandler(BaseHTTPRequestHandler):
             elif path == "/api/export/afsim":
                 export_path = export_scenario_draft(engine.scenario, PROJECT_ROOT / "exports")
                 _json_response(self, {"path": str(export_path), "afsim": afsim_available()})
+            elif path == "/api/afsim/run":
+                request = AFSimRunRequest.model_validate(payload)
+                result = run_demo(request.demo_name, request.input_file, request.timeout_seconds)
+                storage.add_event("afsim.run", result)
+                _json_response(self, result)
+            elif path == "/api/afsim/designs":
+                result = generate_scenario(AFSimScenarioDesign.model_validate(payload))
+                result["parsed"] = parse_scenario_file(Path(str(result["scenario_path"])))
+                storage.add_event("afsim.design.generated", result)
+                _json_response(self, result)
+            elif path.startswith("/api/afsim/designs/") and path.endswith("/run"):
+                scenario_id = path.removeprefix("/api/afsim/designs/").removesuffix("/run").strip("/")
+                request = AFSimGeneratedRunRequest.model_validate(payload)
+                result = run_generated_scenario(scenario_id, request.timeout_seconds)
+                storage.add_event("afsim.generated.run", result)
+                _json_response(self, result)
+            elif path.startswith("/api/afsim/designs/") and path.endswith("/launch-map"):
+                scenario_id = path.removeprefix("/api/afsim/designs/").removesuffix("/launch-map").strip("/")
+                result = launch_generated_warlock(scenario_id)
+                storage.add_event("afsim.generated.launch_map", result)
+                _json_response(self, result)
+            elif path == "/api/afsim/analyze":
+                runs = list_runs()
+                run_id = payload.get("run_id")
+                run = next((item for item in runs if item.get("run_id") == run_id), runs[0] if runs else None)
+                if not run:
+                    _json_response(self, {"detail": "AFSIM run not found"}, 404)
+                else:
+                    analysis = asyncio.run(commander.analyze_afsim_run(run))
+                    storage.add_event("afsim.analysis", {"run_id": run.get("run_id"), "analysis": analysis})
+                    _json_response(self, {"run": run, "analysis": analysis})
+            elif path == "/api/afsim/launch-3d":
+                result = launch_mystic(payload.get("run_id") if isinstance(payload.get("run_id"), str) else None)
+                storage.add_event("afsim.launch_3d", result)
+                _json_response(self, result)
+            elif path == "/api/afsim/launch-map":
+                result = launch_warlock(
+                    payload.get("demo_name") if isinstance(payload.get("demo_name"), str) else None,
+                    payload.get("input_file") if isinstance(payload.get("input_file"), str) else None,
+                )
+                storage.add_event("afsim.launch_map", result)
+                _json_response(self, result)
             else:
                 _json_response(self, {"detail": "not found"}, 404)
         except Exception as exc:
@@ -139,11 +223,19 @@ class PreviewHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _binary_response(self, body: bytes, content_type: str) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store, max-age=0")
+        self.end_headers()
+        self.wfile.write(body)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the dependency-light AFSIM_LLM preview server.")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--port", type=int, default=8766)
     args = parser.parse_args()
     server = ThreadingHTTPServer((args.host, args.port), PreviewHandler)
     print(f"AFSIM_LLM preview server: http://{args.host}:{args.port}")

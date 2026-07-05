@@ -29,7 +29,7 @@ _load_dotenv(PROJECT_ROOT / ".env")
 class Settings:
     app_name: str = "AFSIM_LLM"
     host: str = os.getenv("AFSIM_LLM_HOST", "127.0.0.1")
-    port: int = int(os.getenv("AFSIM_LLM_PORT", "8000"))
+    port: int = int(os.getenv("AFSIM_LLM_PORT", "8766"))
     db_path: Path = Path(os.getenv("AFSIM_LLM_DB", str(PROJECT_ROOT / "afsim_llm.sqlite3")))
     afsim_root: Path = Path(
         os.getenv(
@@ -41,6 +41,7 @@ class Settings:
     siliconflow_base_url: str = os.getenv("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1")
     siliconflow_model: str = os.getenv("SILICONFLOW_MODEL", "Pro/zai-org/GLM-4.7")
     llm_timeout_seconds: float = float(os.getenv("AFSIM_LLM_TIMEOUT", "25"))
+    afsim_native_stream_url: str = os.getenv("AFSIM_NATIVE_STREAM_URL", "")
 
 
 settings = Settings()
