@@ -17,6 +17,11 @@ data/
 runtime/
 logs/
 *.log
+exports/
+reports/
+*.sqlite3
+.preview_server.pid
+.fastapi_server.pid
 
 # Environment files
 .env

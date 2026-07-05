@@ -1,0 +1,207 @@
+{
+  "id": "demo_air_space_radar",
+  "name": "空天目标探测与突防初始想定",
+  "domain": "near_space",
+  "description": "用于 AFSIM_LLM 初版演示的红蓝对抗闭环：蓝方雷达网与指控节点持续探测红方空天目标，LLM 只生成仿真内白名单控制建议。",
+  "terrain": "ocean",
+  "weather": "clear",
+  "step_seconds": 1.0,
+  "units": [
+    {
+      "id": "blue_c2",
+      "name": "蓝方指控中心",
+      "side": "blue",
+      "kind": "c2",
+      "position": { "x": -120.0, "y": 70.0, "z": 0.0 },
+      "speed_kps": 0.0,
+      "heading_deg": 0.0,
+      "altitude_km": 0.0,
+      "health": 1.0,
+      "visible": true,
+      "sensors": [
+        { "name": "C2 Link", "type": "comms", "range_km": 260.0, "power": 0.8, "enabled": true }
+      ],
+      "route": [],
+      "metadata": { "command_role": "mission_control" }
+    },
+    {
+      "id": "blue_radar_a",
+      "name": "岸基远程雷达 A",
+      "side": "blue",
+      "kind": "radar",
+      "position": { "x": -80.0, "y": 30.0, "z": 0.0 },
+      "speed_kps": 0.0,
+      "heading_deg": 25.0,
+      "altitude_km": 0.0,
+      "health": 1.0,
+      "visible": true,
+      "sensors": [
+        { "name": "L-band Search Radar", "type": "radar", "range_km": 240.0, "power": 0.82, "enabled": true }
+      ],
+      "route": [],
+      "metadata": { "model": "radar-static-v0", "version": "0.1" }
+    },
+    {
+      "id": "blue_radar_b",
+      "name": "前沿机动雷达 B",
+      "side": "blue",
+      "kind": "radar",
+      "position": { "x": 45.0, "y": 92.0, "z": 0.0 },
+      "speed_kps": 0.0,
+      "heading_deg": 335.0,
+      "altitude_km": 0.0,
+      "health": 1.0,
+      "visible": true,
+      "sensors": [
+        { "name": "X-band Fire Control Radar", "type": "radar", "range_km": 170.0, "power": 0.76, "enabled": true }
+      ],
+      "route": [],
+      "metadata": { "model": "radar-mobile-v0", "version": "0.1" }
+    },
+    {
+      "id": "blue_awacs",
+      "name": "蓝方预警机",
+      "side": "blue",
+      "kind": "aircraft",
+      "position": { "x": -30.0, "y": 115.0, "z": 9.0 },
+      "speed_kps": 0.22,
+      "heading_deg": 95.0,
+      "altitude_km": 9.0,
+      "health": 1.0,
+      "visible": true,
+      "sensors": [
+        { "name": "Airborne AESA", "type": "radar", "range_km": 220.0, "power": 0.72, "enabled": true }
+      ],
+      "route": [],
+      "metadata": { "model": "aircraft-awacs-v0", "version": "0.1" }
+    },
+    {
+      "id": "red_hgv_1",
+      "name": "红方临近空间目标",
+      "side": "red",
+      "kind": "missile",
+      "position": { "x": 210.0, "y": -105.0, "z": 32.0 },
+      "speed_kps": 1.45,
+      "heading_deg": 318.0,
+      "altitude_km": 32.0,
+      "health": 1.0,
+      "visible": true,
+      "sensors": [],
+      "route": [],
+      "metadata": { "signature": "low_rcs", "model": "target-hgv-v0" }
+    },
+    {
+      "id": "red_air_1",
+      "name": "红方低空目标",
+      "side": "red",
+      "kind": "aircraft",
+      "position": { "x": 155.0, "y": -75.0, "z": 0.8 },
+      "speed_kps": 0.28,
+      "heading_deg": 305.0,
+      "altitude_km": 0.8,
+      "health": 1.0,
+      "visible": true,
+      "sensors": [],
+      "route": [],
+      "metadata": { "signature": "terrain_masked", "model": "target-air-v0" }
+    },
+    {
+      "id": "red_jammer_1",
+      "name": "红方干扰源",
+      "side": "red",
+      "kind": "jammer",
+      "position": { "x": 95.0, "y": -20.0, "z": 8.0 },
+      "speed_kps": 0.18,
+      "heading_deg": 292.0,
+      "altitude_km": 8.0,
+      "health": 1.0,
+      "visible": true,
+      "sensors": [
+        { "name": "Wideband Jammer", "type": "jammer", "range_km": 160.0, "power": 0.86, "enabled": true }
+      ],
+      "route": [],
+      "metadata": { "model": "jammer-air-v0" }
+    },
+    {
+      "id": "neutral_sat_1",
+      "name": "中立遥感卫星",
+      "side": "neutral",
+      "kind": "satellite",
+      "position": { "x": -260.0, "y": -190.0, "z": 620.0 },
+      "speed_kps": 7.1,
+      "heading_deg": 62.0,
+      "altitude_km": 620.0,
+      "health": 1.0,
+      "visible": true,
+      "sensors": [
+        { "name": "Remote Sensing Payload", "type": "eo", "range_km": 700.0, "power": 0.64, "enabled": true }
+      ],
+      "route": [],
+      "metadata": { "model": "satellite-rs-v0" }
+    }
+  ],
+  "layers": [
+    {
+      "id": "base_ocean",
+      "name": "基础海域",
+      "group": "base",
+      "visible": true,
+      "opacity": 1.0,
+      "features": [
+        { "type": "polygon", "name": "演示海区", "points": [[-280, -180], [280, -180], [280, 180], [-280, 180]] }
+      ]
+    },
+    {
+      "id": "deployment_blue",
+      "name": "蓝方部署",
+      "group": "deployment",
+      "visible": true,
+      "opacity": 1.0,
+      "features": []
+    },
+    {
+      "id": "deployment_red",
+      "name": "红方部署",
+      "group": "deployment",
+      "visible": true,
+      "opacity": 1.0,
+      "features": []
+    },
+    {
+      "id": "dynamic_tracks",
+      "name": "动态航迹",
+      "group": "dynamic",
+      "visible": true,
+      "opacity": 0.95,
+      "features": []
+    },
+    {
+      "id": "environment_weather",
+      "name": "气象环境",
+      "group": "environment",
+      "visible": true,
+      "opacity": 0.65,
+      "features": [
+        { "type": "label", "name": "clear", "x": -260, "y": 160 }
+      ]
+    },
+    {
+      "id": "environment_em",
+      "name": "电磁环境",
+      "group": "environment",
+      "visible": true,
+      "opacity": 0.75,
+      "features": []
+    },
+    {
+      "id": "intel_watch",
+      "name": "情报监视区",
+      "group": "intelligence",
+      "visible": true,
+      "opacity": 0.45,
+      "features": [
+        { "type": "circle", "name": "重点监视区", "x": 40, "y": -20, "r": 120 }
+      ]
+    }
+  ]
+}

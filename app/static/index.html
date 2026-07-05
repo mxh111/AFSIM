@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>AFSIM_LLM</title>
+    <link rel="stylesheet" href="/static/css/app.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div>
+          <h1>AFSIM_LLM 指挥仿真平台</h1>
+          <p id="scenarioLabel">加载中</p>
+        </div>
+        <div class="status-strip">
+          <span id="simTime">T+0.0s</span>
+          <span id="runState">STOP</span>
+          <span id="speedFactor">1x</span>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <aside class="panel left-panel">
+          <section>
+            <h2>仿真控制</h2>
+            <div class="toolbar">
+              <button data-action="start">启动</button>
+              <button data-action="pause">暂停</button>
+              <button data-action="resume">继续</button>
+              <button data-action="step">单步</button>
+              <button data-action="faster">加速</button>
+              <button data-action="slower">减速</button>
+              <button data-action="reset">复位</button>
+            </div>
+          </section>
+
+          <section>
+            <h2>大模型指挥</h2>
+            <textarea id="objective" rows="6">保持蓝方雷达覆盖连续，识别红方空天目标，并给出下一步仿真内指挥建议。</textarea>
+            <div class="row">
+              <select id="autonomy">
+                <option value="manual_review">人工确认</option>
+                <option value="auto_apply">自动应用</option>
+              </select>
+              <button id="askCommander">生成建议</button>
+            </div>
+            <button id="applyAdvice" class="wide-button">应用当前建议</button>
+            <div id="commanderOutput" class="output"></div>
+          </section>
+
+          <section>
+            <h2>数据与集成</h2>
+            <div class="toolbar">
+              <button id="makeReport">生成复盘</button>
+              <button id="exportAfsim">导出 AFSIM</button>
+            </div>
+            <div id="integrationOutput" class="output"></div>
+          </section>
+        </aside>
+
+        <section class="map-panel">
+          <canvas id="battleCanvas" width="1200" height="760"></canvas>
+          <div class="legend">
+            <span><i class="blue"></i>蓝方</span>
+            <span><i class="red"></i>红方</span>
+            <span><i class="neutral"></i>中立</span>
+            <span><i class="detect"></i>探测链路</span>
+          </div>
+        </section>
+
+        <aside class="panel right-panel">
+          <section>
+            <h2>态势摘要</h2>
+            <div class="metric-grid">
+              <div><strong id="unitCount">0</strong><span>目标</span></div>
+              <div><strong id="detectionCount">0</strong><span>探测</span></div>
+              <div><strong id="layerCount">0</strong><span>图层</span></div>
+              <div><strong id="eventCount">0</strong><span>事件</span></div>
+            </div>
+          </section>
+
+          <section>
+            <h2>图层管理</h2>
+            <div id="layers" class="list"></div>
+          </section>
+
+          <section>
+            <h2>装备列表</h2>
+            <div id="units" class="unit-list"></div>
+          </section>
+
+          <section>
+            <h2>事件日志</h2>
+            <div id="events" class="event-list"></div>
+          </section>
+        </aside>
+      </main>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+  </body>
+</html>
