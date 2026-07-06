@@ -9,9 +9,23 @@ from fastapi.staticfiles import StaticFiles
 
 from app.core.config import PROJECT_ROOT, settings
 from app.core.security import User, role_catalog, user_from_token
-from app.models import AFSimGeneratedRunRequest, AFSimRunRequest, AFSimScenarioDesign, CommanderRequest, SimulationControl
+from app.models import (
+    AFSimAgentTickRequest,
+    AFSimGeneratedRunRequest,
+    AFSimRunRequest,
+    AFSimScenarioDesign,
+    CommanderRequest,
+    SimulationControl,
+)
 from app.services.afsim_adapter import afsim_available, export_scenario_draft
-from app.services.afsim_design import generate_scenario, list_generated_scenarios, read_generated_scenario
+from app.services.afsim_design import (
+    delete_generated_scenario,
+    generate_scenario,
+    list_generated_scenarios,
+    platform_templates,
+    read_generated_scenario,
+    scene_overview,
+)
 from app.services.afsim_parser import parse_demo_scenario, parse_scenario_file
 from app.services.afsim_runner import (
     discover_demos,
@@ -36,6 +50,15 @@ commander = CommanderLLM()
 
 app = FastAPI(title=settings.app_name, version="0.1.0")
 app.mount("/static", StaticFiles(directory=PROJECT_ROOT / "app" / "static"), name="static")
+
+
+@app.middleware("http")
+async def no_cache_for_dev_assets(request, call_next):
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+    return response
 
 
 def current_user(x_afsim_token: str | None = Header(default=None)) -> User:
@@ -185,6 +208,13 @@ async def afsim_designs(user: User = Depends(current_user)) -> list[dict[str, ob
     return list_generated_scenarios()
 
 
+@app.get("/api/afsim/platform-templates")
+async def afsim_platform_templates(user: User = Depends(current_user)) -> list[dict[str, object]]:
+    if not user.can("read:state"):
+        raise HTTPException(status_code=403, detail="permission denied")
+    return platform_templates()
+
+
 @app.post("/api/afsim/designs")
 async def afsim_create_design(payload: AFSimScenarioDesign, user: User = Depends(current_user)) -> dict[str, object]:
     if not user.can("edit:scenario"):
@@ -210,6 +240,30 @@ async def afsim_read_design(scenario_id: str, user: User = Depends(current_user)
     return {**result, "parsed": parsed}
 
 
+@app.delete("/api/afsim/designs/{scenario_id}")
+async def afsim_delete_design(scenario_id: str, user: User = Depends(current_user)) -> dict[str, object]:
+    if not user.can("edit:scenario"):
+        raise HTTPException(status_code=403, detail="permission denied")
+    try:
+        result = delete_generated_scenario(scenario_id)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    storage.add_event("afsim.design.deleted", result)
+    return result
+
+
+@app.get("/api/afsim/designs/{scenario_id}/scene")
+async def afsim_generated_scene(scenario_id: str, user: User = Depends(current_user)) -> dict[str, object]:
+    if not user.can("read:state"):
+        raise HTTPException(status_code=403, detail="permission denied")
+    try:
+        result = read_generated_scenario(scenario_id)
+        parsed = parse_scenario_file(Path(str(result["scenario_path"])))
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return scene_overview(parsed)
+
+
 @app.post("/api/afsim/designs/{scenario_id}/run")
 async def afsim_run_design(
     scenario_id: str,
@@ -224,6 +278,31 @@ async def afsim_run_design(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     storage.add_event("afsim.generated.run", result)
     return result
+
+
+@app.post("/api/agent/tick")
+async def agent_tick(payload: AFSimAgentTickRequest, user: User = Depends(current_user)) -> dict[str, object]:
+    if not user.can("ask:llm"):
+        raise HTTPException(status_code=403, detail="permission denied")
+    if not user.can("control:sim") and payload.autonomy == "auto_apply":
+        raise HTTPException(status_code=403, detail="permission denied")
+    engine.step(payload.step_seconds)
+    request = CommanderRequest(objective=payload.objective, side=payload.side, autonomy=payload.autonomy)
+    advice = await commander.advise(request, engine.snapshot())
+    applied = []
+    if payload.autonomy == "auto_apply":
+        applied = engine.apply_commands(advice.commands)
+    storage.add_event(
+        "agent.tick",
+        {
+            "objective": payload.objective,
+            "side": payload.side,
+            "autonomy": payload.autonomy,
+            "advice": advice.model_dump(),
+            "applied": applied,
+        },
+    )
+    return {"advice": advice.model_dump(), "applied": applied, "state": engine.snapshot().model_dump()}
 
 
 @app.post("/api/afsim/designs/{scenario_id}/launch-map")

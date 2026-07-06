@@ -14,6 +14,9 @@ flowchart LR
   B --> E["Warlock 原生地图"]
   D --> F["Mystic AER 回放"]
   D --> G["硅基流动 LLM 分析"]
+  I["实时指挥 Agent"] --> J["白名单仿真指令"]
+  J --> K["封闭仿真沙盘状态"]
+  K --> I
   E --> H["网页原生窗口显示桥"]
   F --> H
 ```
@@ -25,8 +28,15 @@ flowchart LR
 - `app/services/afsim_runner.py`：发现 demo、运行 `mission.exe`、启动 Warlock/Mystic、采集输出。
 - `app/services/afsim_parser.py`：解析 scenario/include 中的平台、阵营、类型和位置。
 - `app/services/native_display.py`：检测 Warlock/Mystic 本机窗口，并为网页提供原生窗口截图。
-- `app/services/llm.py`：硅基流动 OpenAI 兼容 API 适配和本地兜底分析。
+- `app/services/simulation.py`：实时指挥 Agent 使用的封闭仿真沙盘状态和白名单指令应用。
+- `app/services/llm.py`：硅基流动 OpenAI 兼容 API 适配、实时指挥建议和本地兜底分析。
 - `app/static/`：AFSIM 原生工作台前端。
+
+## Agent 方向
+
+当前版本先用轻量编排实现可落地闭环：前端设置目标、指挥方、步长和自治模式，后端推进封闭仿真沙盘，调用硅基流动模型输出 JSON 指令，再由白名单执行器应用到仿真状态。此阶段不强依赖 LangChain，原因是工具数量和状态机还不复杂，直接代码更容易审计和落地。
+
+当后续加入更多工具时，再把这一层迁移到 LangGraph/LangChain 更合适，例如：AFSIM 场景检查工具、`.evt/.aer` 时序解析工具、场景版本工具、Warlock 桌面流控制工具、RAG 知识库工具和权限审计工具。
 
 ## 原生显示方案
 
@@ -39,12 +49,13 @@ flowchart LR
 
 ## 安全边界
 
-LLM 只用于封闭仿真工程分析、场景检查和复盘建议。系统不执行真实世界作战命令，不输出武器释放、杀伤或规避拦截等现实伤害性指令。生成场景用于 AFSIM 仿真验证。
+LLM 只用于封闭仿真工程分析、场景检查、复盘建议和仿真内态势管理。系统不执行真实世界作战命令，不输出武器释放、杀伤或规避拦截等现实伤害性指令。生成场景用于 AFSIM 仿真验证。
 
 ## 下一步
 
-- 将 AFSIM base_types、demo 类型库整理为可选模板库。
+- 继续扩展 AFSIM base_types、demo 类型库，形成分层平台模板库。
 - 增加更完整的航路编辑、批量平台导入和场景版本管理。
 - 深入解析 `.evt/.aer`，形成时间索引态势数据。
 - 接入正式 noVNC/RDP/WebRTC 服务，提供可交互的网页内嵌 Warlock/Mystic。
+- 将实时 Agent 升级为 LangGraph/LangChain 工具编排，并加入人工审批、记忆和任务规划。
 - 增加数据库化场景库、运行库、复盘库和权限审计。

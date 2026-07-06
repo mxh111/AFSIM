@@ -4,13 +4,13 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>AFSIM_LLM</title>
-    <link rel="stylesheet" href="/static/css/app.css" />
+    <link rel="stylesheet" href="/static/css/app.css?v=20260706_fix_cache" />
   </head>
   <body>
     <div class="app-shell">
       <header class="topbar">
         <div>
-          <h1>AFSIM_LLM 原生AFSIM指挥仿真平台</h1>
+          <h1>AFSIM_LLM 仿真指挥 Agent 平台</h1>
           <p id="systemStatus">正在连接 AFSIM...</p>
         </div>
         <div class="status-strip" aria-label="系统状态">
@@ -26,7 +26,7 @@
           <section>
             <div class="section-head">
               <h2>场景设计器</h2>
-              <button id="addPlatform" type="button">添加平台</button>
+              <button id="saveScenario" type="button">保存</button>
             </div>
             <label class="field">
               <span>想定名称</span>
@@ -34,36 +34,65 @@
             </label>
             <label class="field">
               <span>说明</span>
-              <textarea id="designDescription" rows="2">网页端生成的AFSIM原生仿真场景</textarea>
+              <textarea id="designDescription" rows="2">网页端生成的 AFSIM 仿真场景</textarea>
             </label>
             <label class="field">
               <span>仿真时长 秒</span>
               <input id="endTime" type="number" min="1" max="86400" value="600" />
             </label>
+            <div class="row">
+              <select id="platformTemplate"></select>
+              <button id="addPlatform" type="button">添加平台</button>
+            </div>
             <div id="platformEditor" class="platform-editor"></div>
             <div class="button-grid">
-              <button id="generateScenario" type="button">生成AFSIM场景</button>
-              <button id="runGenerated" type="button">运行生成场景</button>
-              <button id="launchGeneratedWarlock" type="button">打开Warlock</button>
-              <button id="launchMystic" type="button">打开Mystic回放</button>
+              <button id="runGenerated" type="button">运行场景</button>
+              <button id="launchGeneratedWarlock" type="button">打开 Warlock</button>
+              <button id="launchMystic" type="button">打开 Mystic</button>
+              <button id="refreshScene" type="button">刷新场景</button>
             </div>
           </section>
 
           <section>
-            <h2>官方AFSIM场景库</h2>
+            <h2>实时指挥 Agent</h2>
+            <textarea id="agentObjective" rows="4">保持蓝方传感器覆盖连续，持续识别红方目标，并给出下一步仿真内指挥建议。</textarea>
+            <div class="row">
+              <select id="agentSide">
+                <option value="blue">蓝方</option>
+                <option value="red">红方</option>
+              </select>
+              <select id="agentAutonomy">
+                <option value="manual_review">人工确认</option>
+                <option value="auto_apply">自动应用</option>
+              </select>
+            </div>
+            <div class="row">
+              <input id="agentStepSeconds" type="number" min="0.1" max="300" step="0.5" value="5" aria-label="指挥步长 秒" />
+              <button id="agentStep" type="button">单步指挥</button>
+            </div>
+            <div class="button-grid">
+              <button id="agentStart" type="button">启动循环</button>
+              <button id="agentStop" type="button">停止循环</button>
+              <button id="agentApply" type="button">应用建议</button>
+              <button id="agentReset" type="button">重置沙盘</button>
+            </div>
+          </section>
+
+          <section>
+            <h2>官方 AFSIM 场景</h2>
             <div class="row">
               <select id="afsimDemo"></select>
               <button id="previewDemo" type="button">解析</button>
             </div>
             <div class="button-grid">
-              <button id="runDemo" type="button">运行Demo</button>
-              <button id="launchDemoWarlock" type="button">Warlock打开Demo</button>
+              <button id="runDemo" type="button">运行 Demo</button>
+              <button id="launchDemoWarlock" type="button">Warlock 打开</button>
             </div>
           </section>
 
           <section>
-            <h2>大模型仿真分析</h2>
-            <textarea id="analysisPrompt" rows="4">请从仿真工程角度分析最近一次AFSIM运行结果，指出脚本、输出文件和复盘数据链路是否正常。</textarea>
+            <h2>大模型复盘</h2>
+            <textarea id="analysisPrompt" rows="3">请从仿真工程角度分析最近一次 AFSIM 运行结果。</textarea>
             <button id="analyzeAfsim" class="wide-button" type="button">分析最近运行</button>
           </section>
         </aside>
@@ -71,19 +100,20 @@
         <section class="native-panel">
           <div class="native-toolbar">
             <div>
-              <strong>AFSIM Native Workspace</strong>
+              <strong id="activeScenarioTitle">AFSIM Scene Workspace</strong>
               <span id="activeScenarioLabel">未选择场景</span>
             </div>
             <div class="native-actions">
-              <select id="nativeTool">
-                <option value="Warlock">Warlock</option>
-                <option value="Mystic">Mystic</option>
+              <select id="workspaceMode">
+                <option value="scene">场景数据</option>
+                <option value="native">原生窗口</option>
               </select>
-              <button id="refreshNative" type="button">刷新原生画面</button>
+              <button id="refreshNative" type="button">刷新显示</button>
             </div>
           </div>
 
-          <div class="native-display">
+          <div id="sceneView" class="scene-view"></div>
+          <div id="nativeDisplay" class="native-display" hidden>
             <iframe id="nativeIframe" title="AFSIM Native Stream" hidden></iframe>
             <img id="nativeFrame" alt="AFSIM Warlock 或 Mystic 原生窗口画面" />
             <div id="nativeOverlay" class="native-overlay">等待 Warlock / Mystic 原生窗口</div>
@@ -91,7 +121,7 @@
 
           <div class="script-pane">
             <div class="section-head">
-              <h2>AFSIM输入文件</h2>
+              <h2>AFSIM 输入文件</h2>
               <span id="scenarioPath">scenario.txt</span>
             </div>
             <pre id="scenarioText"></pre>
@@ -100,13 +130,18 @@
 
         <aside class="panel right-panel">
           <section>
-            <h2>生成场景库</h2>
+            <h2>场景库</h2>
             <div id="generatedScenarios" class="list"></div>
           </section>
 
           <section>
-            <h2>AFSIM平台解析</h2>
+            <h2>AFSIM 平台解析</h2>
             <div id="scenarioPreview" class="table-list"></div>
+          </section>
+
+          <section>
+            <h2>实时指挥输出</h2>
+            <div id="agentOutput" class="output"></div>
           </section>
 
           <section>
@@ -120,13 +155,13 @@
           </section>
 
           <section>
-            <h2>LLM分析</h2>
+            <h2>LLM 复盘</h2>
             <div id="analysisOutput" class="output"></div>
           </section>
         </aside>
       </main>
     </div>
 
-    <script src="/static/js/app.js"></script>
+    <script src="/static/js/app.js?v=20260706_fix_cache"></script>
   </body>
 </html>

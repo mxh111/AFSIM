@@ -13,9 +13,23 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from app.models import AFSimGeneratedRunRequest, AFSimRunRequest, AFSimScenarioDesign, CommanderCommand, CommanderRequest
+from app.models import (
+    AFSimAgentTickRequest,
+    AFSimGeneratedRunRequest,
+    AFSimRunRequest,
+    AFSimScenarioDesign,
+    CommanderCommand,
+    CommanderRequest,
+)
 from app.services.afsim_adapter import afsim_available, export_scenario_draft
-from app.services.afsim_design import generate_scenario, list_generated_scenarios, read_generated_scenario
+from app.services.afsim_design import (
+    delete_generated_scenario,
+    generate_scenario,
+    list_generated_scenarios,
+    platform_templates,
+    read_generated_scenario,
+    scene_overview,
+)
 from app.services.afsim_parser import parse_demo_scenario
 from app.services.afsim_parser import parse_scenario_file
 from app.services.afsim_runner import (
@@ -87,11 +101,19 @@ class PreviewHandler(BaseHTTPRequestHandler):
                 _json_response(self, list_runs())
             elif path == "/api/afsim/designs":
                 _json_response(self, list_generated_scenarios())
+            elif path == "/api/afsim/platform-templates":
+                _json_response(self, platform_templates())
             elif path.startswith("/api/afsim/designs/"):
                 scenario_id = path.removeprefix("/api/afsim/designs/").strip("/")
-                result = read_generated_scenario(scenario_id)
-                result["parsed"] = parse_scenario_file(Path(str(result["scenario_path"])))
-                _json_response(self, result)
+                if scenario_id.endswith("/scene"):
+                    scenario_id = scenario_id.removesuffix("/scene").strip("/")
+                    result = read_generated_scenario(scenario_id)
+                    parsed_scene = parse_scenario_file(Path(str(result["scenario_path"])))
+                    _json_response(self, scene_overview(parsed_scene))
+                else:
+                    result = read_generated_scenario(scenario_id)
+                    result["parsed"] = parse_scenario_file(Path(str(result["scenario_path"])))
+                    _json_response(self, result)
             elif path == "/api/afsim/native-display":
                 _json_response(self, native_display_status(""))
             elif path == "/api/afsim/native-frame.jpg":
@@ -135,6 +157,36 @@ class PreviewHandler(BaseHTTPRequestHandler):
                 if request.autonomy == "auto_apply":
                     applied = engine.apply_commands(result.commands)
                 storage.add_event("commander.response", result.model_dump())
+                _json_response(
+                    self,
+                    {
+                        "advice": result.model_dump(),
+                        "applied": applied,
+                        "state": engine.snapshot().model_dump(),
+                    },
+                )
+            elif path == "/api/agent/tick":
+                request = AFSimAgentTickRequest.model_validate(payload)
+                engine.step(request.step_seconds)
+                commander_request = CommanderRequest(
+                    objective=request.objective,
+                    side=request.side,
+                    autonomy=request.autonomy,
+                )
+                result = asyncio.run(commander.advise(commander_request, engine.snapshot()))
+                applied = []
+                if request.autonomy == "auto_apply":
+                    applied = engine.apply_commands(result.commands)
+                storage.add_event(
+                    "agent.tick",
+                    {
+                        "objective": request.objective,
+                        "side": request.side,
+                        "autonomy": request.autonomy,
+                        "advice": result.model_dump(),
+                        "applied": applied,
+                    },
+                )
                 _json_response(
                     self,
                     {
@@ -211,6 +263,20 @@ class PreviewHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             _json_response(self, {"detail": str(exc)}, 500)
 
+    def do_DELETE(self) -> None:
+        parsed = urlparse(self.path)
+        path = unquote(parsed.path)
+        try:
+            if path.startswith("/api/afsim/designs/"):
+                scenario_id = path.removeprefix("/api/afsim/designs/").strip("/")
+                result = delete_generated_scenario(scenario_id)
+                storage.add_event("afsim.design.deleted", result)
+                _json_response(self, result)
+            else:
+                _json_response(self, {"detail": "not found"}, 404)
+        except Exception as exc:
+            _json_response(self, {"detail": str(exc)}, 500)
+
     def _serve_file(self, path: Path) -> None:
         if not path.exists() or not path.is_file():
             _json_response(self, {"detail": "not found"}, 404)
@@ -219,6 +285,8 @@ class PreviewHandler(BaseHTTPRequestHandler):
         content_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
         self.send_response(200)
         self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "no-store, max-age=0")
+        self.send_header("Pragma", "no-cache")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)

@@ -23,6 +23,7 @@ class NativeWindow:
             "top": top,
             "width": max(0, right - left),
             "height": max(0, bottom - top),
+            "minimized": bool(_user32().IsIconic(self.hwnd)) if hasattr(ctypes, "windll") else False,
         }
 
 
@@ -90,6 +91,22 @@ def _placeholder(text: str, width: int = 1280, height: int = 720) -> bytes:
     return output.getvalue()
 
 
+def _restore_window(hwnd: int) -> tuple[int, int, int, int] | None:
+    if not hasattr(ctypes, "windll"):
+        return None
+    user32 = _user32()
+    sw_restore = 9
+    try:
+        user32.ShowWindow(hwnd, sw_restore)
+        user32.SetForegroundWindow(hwnd)
+        time.sleep(0.35)
+        rect = wintypes.RECT()
+        user32.GetWindowRect(hwnd, ctypes.byref(rect))
+        return (rect.left, rect.top, rect.right, rect.bottom)
+    except Exception:
+        return None
+
+
 def capture_window_jpeg(title_contains: str = "Warlock") -> bytes:
     if not capture_available():
         return _placeholder("Pillow ImageGrab is not available on this Python environment.")
@@ -103,6 +120,12 @@ def capture_window_jpeg(title_contains: str = "Warlock") -> bytes:
     top = int(window["top"])
     right = left + int(window["width"])
     bottom = top + int(window["height"])
+    if bool(window.get("minimized")) or left < -10000 or top < -10000 or (right - left) < 300 or (bottom - top) < 200:
+        restored = _restore_window(int(window["hwnd"]))
+        if restored:
+            left, top, right, bottom = restored
+    if left < -10000 or top < -10000 or (right - left) < 300 or (bottom - top) < 200:
+        return _placeholder(f"Native window is minimized or off-screen: {window['title']}")
     try:
         image = ImageGrab.grab(bbox=(left, top, right, bottom), all_screens=True)
     except TypeError:

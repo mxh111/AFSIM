@@ -106,6 +106,13 @@ class AFSimGeneratedRunRequest(BaseModel):
     timeout_seconds: int = Field(default=120, ge=5, le=1800)
 
 
+class AFSimAgentTickRequest(BaseModel):
+    objective: str = Field(..., min_length=2, max_length=1200)
+    side: Literal["blue", "red"] = "blue"
+    autonomy: Literal["manual_review", "auto_apply"] = "manual_review"
+    step_seconds: float = Field(default=5.0, ge=0.1, le=300.0)
+
+
 class CommanderRequest(BaseModel):
     objective: str = Field(..., min_length=2, max_length=1200)
     side: Literal["blue", "red"] = "blue"
