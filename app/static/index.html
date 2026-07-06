@@ -4,19 +4,18 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>AFSIM_LLM</title>
-    <link rel="stylesheet" href="/static/css/app.css?v=20260706_fix_cache" />
+    <link rel="stylesheet" href="/static/css/app.css?v=20260706_web_map3" />
   </head>
   <body>
     <div class="app-shell">
       <header class="topbar">
         <div>
-          <h1>AFSIM_LLM 仿真指挥 Agent 平台</h1>
-          <p id="systemStatus">正在连接 AFSIM...</p>
+          <h1>AFSIM_LLM Web 态势解析工作台</h1>
+          <p id="systemStatus">正在读取 AFSIM 数据...</p>
         </div>
         <div class="status-strip" aria-label="系统状态">
           <span id="missionStatus">mission</span>
-          <span id="warlockStatus">Warlock</span>
-          <span id="mysticStatus">Mystic</span>
+          <span id="parserStatus">parser</span>
           <span id="llmStatus">LLM</span>
         </div>
       </header>
@@ -34,7 +33,7 @@
             </label>
             <label class="field">
               <span>说明</span>
-              <textarea id="designDescription" rows="2">网页端生成的 AFSIM 仿真场景</textarea>
+              <textarea id="designDescription" rows="2">网页端生成并解析展示的 AFSIM 仿真场景</textarea>
             </label>
             <label class="field">
               <span>仿真时长 秒</span>
@@ -47,9 +46,7 @@
             <div id="platformEditor" class="platform-editor"></div>
             <div class="button-grid">
               <button id="runGenerated" type="button">运行场景</button>
-              <button id="launchGeneratedWarlock" type="button">打开 Warlock</button>
-              <button id="launchMystic" type="button">打开 Mystic</button>
-              <button id="refreshScene" type="button">刷新场景</button>
+              <button id="refreshScene" type="button">刷新地图</button>
             </div>
           </section>
 
@@ -84,10 +81,7 @@
               <select id="afsimDemo"></select>
               <button id="previewDemo" type="button">解析</button>
             </div>
-            <div class="button-grid">
-              <button id="runDemo" type="button">运行 Demo</button>
-              <button id="launchDemoWarlock" type="button">Warlock 打开</button>
-            </div>
+            <button id="runDemo" class="wide-button" type="button">运行 Demo</button>
           </section>
 
           <section>
@@ -97,27 +91,18 @@
           </section>
         </aside>
 
-        <section class="native-panel">
-          <div class="native-toolbar">
+        <section class="map-panel">
+          <div class="map-toolbar">
             <div>
-              <strong id="activeScenarioTitle">AFSIM Scene Workspace</strong>
+              <strong id="activeScenarioTitle">Web Map Workspace</strong>
               <span id="activeScenarioLabel">未选择场景</span>
             </div>
-            <div class="native-actions">
-              <select id="workspaceMode">
-                <option value="scene">场景数据</option>
-                <option value="native">原生窗口</option>
-              </select>
-              <button id="refreshNative" type="button">刷新显示</button>
+            <div class="map-actions">
+              <button id="fitScene" type="button">适配视图</button>
             </div>
           </div>
 
           <div id="sceneView" class="scene-view"></div>
-          <div id="nativeDisplay" class="native-display" hidden>
-            <iframe id="nativeIframe" title="AFSIM Native Stream" hidden></iframe>
-            <img id="nativeFrame" alt="AFSIM Warlock 或 Mystic 原生窗口画面" />
-            <div id="nativeOverlay" class="native-overlay">等待 Warlock / Mystic 原生窗口</div>
-          </div>
 
           <div class="script-pane">
             <div class="section-head">
@@ -140,6 +125,11 @@
           </section>
 
           <section>
+            <h2>解析摘要</h2>
+            <div id="parseSummary" class="output"></div>
+          </section>
+
+          <section>
             <h2>实时指挥输出</h2>
             <div id="agentOutput" class="output"></div>
           </section>
@@ -150,11 +140,6 @@
           </section>
 
           <section>
-            <h2>原生窗口</h2>
-            <div id="nativeWindows" class="list"></div>
-          </section>
-
-          <section>
             <h2>LLM 复盘</h2>
             <div id="analysisOutput" class="output"></div>
           </section>
@@ -162,6 +147,6 @@
       </main>
     </div>
 
-    <script src="/static/js/app.js?v=20260706_fix_cache"></script>
+    <script src="/static/js/app.js?v=20260706_web_map3"></script>
   </body>
 </html>

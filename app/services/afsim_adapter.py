@@ -12,8 +12,8 @@ def afsim_available() -> dict[str, str | bool]:
         "root": str(settings.afsim_root),
         "exists": settings.afsim_root.exists(),
         "bin_exists": bin_dir.exists(),
-        "warlock": str(bin_dir / "warlock.exe"),
-        "wsf_runner": str(bin_dir / "wsf_runner.exe"),
+        "mission": str(bin_dir / "mission.exe"),
+        "mission_exists": (bin_dir / "mission.exe").exists(),
     }
 
 

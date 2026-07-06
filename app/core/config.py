@@ -41,7 +41,6 @@ class Settings:
     siliconflow_base_url: str = os.getenv("SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1")
     siliconflow_model: str = os.getenv("SILICONFLOW_MODEL", "Pro/zai-org/GLM-4.7")
     llm_timeout_seconds: float = float(os.getenv("AFSIM_LLM_TIMEOUT", "25"))
-    afsim_native_stream_url: str = os.getenv("AFSIM_NATIVE_STREAM_URL", "")
 
 
 settings = Settings()

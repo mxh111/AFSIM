@@ -33,7 +33,6 @@ def test_afsim_installation_is_discoverable():
     afsim_status = status()
     assert afsim_status["root_exists"]
     assert afsim_status["mission_exists"]
-    assert afsim_status["mystic_exists"]
     demos = discover_demos()
     assert any(demo["name"] == "simple_scenario" for demo in demos)
 
@@ -44,6 +43,11 @@ def test_afsim_scenario_parser_extracts_platforms():
     striker = next(platform for platform in parsed["platforms"] if platform["id"] == "SimpleStriker")
     assert striker["side"] == "blue"
     assert striker["positions"][0]["lat"] == 1.05
+    assert parsed["included_files"]
+    assert parsed["bounds"] is not None
+    assert parsed["geojson"]["type"] == "FeatureCollection"
+    assert parsed["geojson"]["features"]
+    assert "route_count" in parsed
 
 
 def test_generated_afsim_design_runs_with_mission():
@@ -84,5 +88,8 @@ def test_generated_afsim_design_runs_with_mission():
 
     assert loaded["scenario_id"] == generated["scenario_id"]
     assert parsed["platform_count"] == 2
+    assert parsed["bounds"] is not None
+    assert parsed["route_count"] == 2
+    assert len(parsed["geojson"]["features"]) >= 4
     assert run["returncode"] == 0
     assert any(file["name"].endswith(".aer") for file in run["files"])

@@ -22,8 +22,6 @@ class AFSimPaths:
     bin_dir: Path
     demos_dir: Path
     mission_exe: Path
-    warlock_exe: Path
-    mystic_exe: Path
 
 
 def afsim_paths() -> AFSimPaths:
@@ -34,8 +32,6 @@ def afsim_paths() -> AFSimPaths:
         bin_dir=bin_dir,
         demos_dir=root / "demos",
         mission_exe=bin_dir / "mission.exe",
-        warlock_exe=bin_dir / "warlock.exe",
-        mystic_exe=bin_dir / "mystic.exe",
     )
 
 
@@ -47,8 +43,6 @@ def status() -> dict[str, Any]:
         "bin_exists": paths.bin_dir.exists(),
         "demos_exists": paths.demos_dir.exists(),
         "mission_exists": paths.mission_exe.exists(),
-        "warlock_exists": paths.warlock_exe.exists(),
-        "mystic_exists": paths.mystic_exe.exists(),
     }
 
 
@@ -246,74 +240,3 @@ def list_runs(limit: int = 50) -> list[dict[str, Any]]:
             continue
     return runs
 
-
-def launch_mystic(run_id: str | None = None) -> dict[str, Any]:
-    paths = afsim_paths()
-    if not paths.mystic_exe.exists():
-        raise FileNotFoundError(f"mystic.exe not found: {paths.mystic_exe}")
-    runs = list_runs()
-    run = next((item for item in runs if item.get("run_id") == run_id), runs[0] if runs else None)
-    if not run:
-        raise FileNotFoundError("AFSIM run not found")
-    aer_file = next((file for file in run.get("files", []) if str(file.get("name", "")).lower().endswith(".aer")), None)
-    if not aer_file:
-        raise FileNotFoundError("No .aer output found for this run")
-    aer_path = Path(str(aer_file["path"]))
-    proc = subprocess.Popen([str(paths.mystic_exe), str(aer_path)], cwd=str(paths.root))
-    return {"pid": proc.pid, "tool": "mystic", "aer_path": str(aer_path), "run_id": run.get("run_id")}
-
-
-def launch_warlock(demo_name: str | None = None, input_file: str | None = None) -> dict[str, Any]:
-    paths = afsim_paths()
-    if not paths.warlock_exe.exists():
-        raise FileNotFoundError(f"warlock.exe not found: {paths.warlock_exe}")
-    if not demo_name:
-        proc = subprocess.Popen([str(paths.warlock_exe)], cwd=str(paths.root))
-        return {"pid": proc.pid, "tool": "warlock", "mode": "start_dialog"}
-
-    demo_dir = _safe_child(paths.demos_dir, demo_name)
-    if not demo_dir.exists() or not demo_dir.is_dir():
-        raise FileNotFoundError(f"AFSIM demo not found: {demo_name}")
-    candidates = _candidate_inputs(demo_dir)
-    if not candidates:
-        raise FileNotFoundError(f"no runnable .txt input found in {demo_dir}")
-    if input_file:
-        input_path = _safe_child(demo_dir, input_file)
-    else:
-        input_path = candidates[0]
-    if input_path.suffix.lower() != ".txt" or not input_path.exists():
-        raise FileNotFoundError(f"input file not found: {input_path}")
-    proc = subprocess.Popen([str(paths.warlock_exe), input_path.name], cwd=str(demo_dir))
-    return {
-        "pid": proc.pid,
-        "tool": "warlock",
-        "mode": "scenario",
-        "demo_name": demo_name,
-        "input_file": input_path.name,
-        "working_dir": str(demo_dir),
-    }
-
-
-def launch_warlock_input(input_path: Path, mode: str = "scenario", metadata: dict[str, Any] | None = None) -> dict[str, Any]:
-    paths = afsim_paths()
-    if not paths.warlock_exe.exists():
-        raise FileNotFoundError(f"warlock.exe not found: {paths.warlock_exe}")
-    if not input_path.exists() or input_path.suffix.lower() != ".txt":
-        raise FileNotFoundError(f"input file not found: {input_path}")
-    proc = subprocess.Popen([str(paths.warlock_exe), input_path.name], cwd=str(input_path.parent))
-    result = {
-        "pid": proc.pid,
-        "tool": "warlock",
-        "mode": mode,
-        "input_file": input_path.name,
-        "working_dir": str(input_path.parent),
-        "scenario_path": str(input_path),
-    }
-    if metadata:
-        result.update(metadata)
-    return result
-
-
-def launch_generated_warlock(scenario_id: str) -> dict[str, Any]:
-    input_path = generated_input_path(scenario_id)
-    return launch_warlock_input(input_path, mode="generated", metadata={"scenario_id": scenario_id})

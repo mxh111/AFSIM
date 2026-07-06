@@ -105,7 +105,7 @@ textarea {
 
 .status-strip {
   display: grid;
-  grid-template-columns: repeat(4, 92px);
+  grid-template-columns: repeat(3, 92px);
   gap: 8px;
 }
 
@@ -249,7 +249,7 @@ h2 {
   font-size: 12px;
 }
 
-.native-panel {
+.map-panel {
   display: grid;
   grid-template-rows: 54px minmax(360px, 1fr) minmax(190px, 30vh);
   min-width: 0;
@@ -257,7 +257,7 @@ h2 {
   background: #0f1012;
 }
 
-.native-toolbar {
+.map-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -267,12 +267,12 @@ h2 {
   padding: 10px 14px;
 }
 
-.native-toolbar strong {
+.map-toolbar strong {
   display: block;
   font-size: 14px;
 }
 
-.native-toolbar span {
+.map-toolbar span {
   display: block;
   max-width: 60vw;
   margin-top: 2px;
@@ -283,17 +283,10 @@ h2 {
   white-space: nowrap;
 }
 
-.native-actions {
+.map-actions {
   display: grid;
   grid-template-columns: 120px auto;
   gap: 8px;
-}
-
-.native-display {
-  position: relative;
-  min-height: 0;
-  overflow: hidden;
-  background: #050607;
 }
 
 .scene-view {
@@ -330,27 +323,9 @@ h2 {
   fill: var(--text);
 }
 
-.native-display iframe,
-.native-display img {
-  display: block;
-  width: 100%;
-  height: 100%;
-  border: 0;
-  object-fit: contain;
-  background: #050607;
-}
-
-.native-overlay {
-  position: absolute;
-  left: 14px;
-  bottom: 14px;
-  max-width: calc(100% - 28px);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: rgba(16, 17, 19, 0.88);
+.muted-label {
   color: var(--muted);
-  padding: 8px 10px;
-  font-size: 12px;
+  fill: var(--muted);
 }
 
 .script-pane {
@@ -492,7 +467,7 @@ h2 {
     border-left: 0;
   }
 
-  .native-panel {
+  .map-panel {
     min-height: 780px;
   }
 
@@ -517,12 +492,12 @@ h2 {
     grid-template-columns: 1fr;
   }
 
-  .native-toolbar {
+  .map-toolbar {
     align-items: stretch;
     flex-direction: column;
   }
 
-  .native-actions {
+  .map-actions {
     grid-template-columns: 1fr 1fr;
   }
 }

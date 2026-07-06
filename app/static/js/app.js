@@ -1,23 +1,11 @@
 const DEFAULT_TEMPLATES = [
   { id: "blue_fighter", label: "蓝方战斗机", type_name: "WEB_AIRCRAFT", side: "blue", category: "fighter", icon: "F-22", altitude_m: 9000, speed_kts: 420, heading_deg: 90 },
   { id: "red_fighter", label: "红方战斗机", type_name: "WEB_AIRCRAFT", side: "red", category: "fighter", icon: "SU-27", altitude_m: 8500, speed_kts: 430, heading_deg: 270 },
-  { id: "blue_bomber", label: "蓝方轰炸机", type_name: "WEB_BOMBER", side: "blue", category: "bomber", icon: "B-52", altitude_m: 10000, speed_kts: 380, heading_deg: 90 },
-  { id: "red_bomber", label: "红方轰炸机", type_name: "WEB_BOMBER", side: "red", category: "bomber", icon: "B-52", altitude_m: 9800, speed_kts: 380, heading_deg: 270 },
   { id: "awacs", label: "预警机", type_name: "WEB_AWACS", side: "blue", category: "awacs", icon: "E-3", altitude_m: 9500, speed_kts: 350, heading_deg: 90 },
-  { id: "tanker", label: "空中加油机", type_name: "WEB_TANKER", side: "blue", category: "tanker", icon: "KC-135", altitude_m: 8500, speed_kts: 330, heading_deg: 90 },
-  { id: "jammer", label: "电子干扰机", type_name: "WEB_JAMMER", side: "blue", category: "jammer", icon: "EA-18G", altitude_m: 8800, speed_kts: 360, heading_deg: 90 },
-  { id: "uav", label: "无人机", type_name: "WEB_UAV", side: "blue", category: "uav", icon: "MQ-9", altitude_m: 6000, speed_kts: 210, heading_deg: 90 },
-  { id: "red_uav", label: "红方无人机", type_name: "WEB_UAV", side: "red", category: "uav", icon: "MQ-9", altitude_m: 5800, speed_kts: 210, heading_deg: 270 },
-  { id: "recon_uav", label: "侦察无人机", type_name: "WEB_RECON_UAV", side: "blue", category: "recon", icon: "MQ-9", altitude_m: 7200, speed_kts: 220, heading_deg: 90 },
   { id: "ground_radar", label: "地面雷达站", type_name: "WEB_GROUND_RADAR", side: "blue", category: "radar", icon: "radar", altitude_m: 0, speed_kts: 0, heading_deg: 0 },
   { id: "red_ground_radar", label: "红方地面雷达站", type_name: "WEB_GROUND_RADAR", side: "red", category: "radar", icon: "radar", altitude_m: 0, speed_kts: 0, heading_deg: 0 },
-  { id: "c2_node", label: "指控节点", type_name: "WEB_C2_NODE", side: "blue", category: "c2", icon: "command-post", altitude_m: 0, speed_kts: 0, heading_deg: 0 },
-  { id: "red_c2_node", label: "红方指控节点", type_name: "WEB_C2_NODE", side: "red", category: "c2", icon: "command-post", altitude_m: 0, speed_kts: 0, heading_deg: 0 },
   { id: "sam_site", label: "防空阵地", type_name: "WEB_SAM_SITE", side: "blue", category: "sam", icon: "sam", altitude_m: 0, speed_kts: 0, heading_deg: 0 },
-  { id: "red_sam_site", label: "红方防空阵地", type_name: "WEB_SAM_SITE", side: "red", category: "sam", icon: "sam", altitude_m: 0, speed_kts: 0, heading_deg: 0 },
   { id: "surface_ship", label: "水面舰艇", type_name: "WEB_SURFACE_SHIP", side: "blue", category: "ship", icon: "ship", altitude_m: 0, speed_kts: 0, heading_deg: 0 },
-  { id: "red_surface_ship", label: "红方水面舰艇", type_name: "WEB_SURFACE_SHIP", side: "red", category: "ship", icon: "ship", altitude_m: 0, speed_kts: 0, heading_deg: 0 },
-  { id: "logistics_site", label: "后勤保障点", type_name: "WEB_GROUND_SITE", side: "blue", category: "logistics", icon: "base", altitude_m: 0, speed_kts: 0, heading_deg: 0 },
 ];
 
 const state = {
@@ -25,19 +13,16 @@ const state = {
   platforms: [],
   designs: [],
   activeScenarioId: null,
-  activeScenarioPath: "",
   activeScene: null,
   lastRunId: null,
   pendingCommands: [],
   agentTimer: null,
-  nativeStreamUrl: "",
 };
 
 const els = {
   systemStatus: document.getElementById("systemStatus"),
   missionStatus: document.getElementById("missionStatus"),
-  warlockStatus: document.getElementById("warlockStatus"),
-  mysticStatus: document.getElementById("mysticStatus"),
+  parserStatus: document.getElementById("parserStatus"),
   llmStatus: document.getElementById("llmStatus"),
   designName: document.getElementById("designName"),
   designDescription: document.getElementById("designDescription"),
@@ -47,9 +32,8 @@ const els = {
   addPlatform: document.getElementById("addPlatform"),
   saveScenario: document.getElementById("saveScenario"),
   runGenerated: document.getElementById("runGenerated"),
-  launchGeneratedWarlock: document.getElementById("launchGeneratedWarlock"),
-  launchMystic: document.getElementById("launchMystic"),
   refreshScene: document.getElementById("refreshScene"),
+  fitScene: document.getElementById("fitScene"),
   agentObjective: document.getElementById("agentObjective"),
   agentSide: document.getElementById("agentSide"),
   agentAutonomy: document.getElementById("agentAutonomy"),
@@ -62,32 +46,26 @@ const els = {
   afsimDemo: document.getElementById("afsimDemo"),
   previewDemo: document.getElementById("previewDemo"),
   runDemo: document.getElementById("runDemo"),
-  launchDemoWarlock: document.getElementById("launchDemoWarlock"),
   analysisPrompt: document.getElementById("analysisPrompt"),
   analyzeAfsim: document.getElementById("analyzeAfsim"),
-  workspaceMode: document.getElementById("workspaceMode"),
-  refreshNative: document.getElementById("refreshNative"),
   sceneView: document.getElementById("sceneView"),
-  nativeDisplay: document.getElementById("nativeDisplay"),
-  nativeIframe: document.getElementById("nativeIframe"),
-  nativeFrame: document.getElementById("nativeFrame"),
-  nativeOverlay: document.getElementById("nativeOverlay"),
-  activeScenarioTitle: document.getElementById("activeScenarioTitle"),
   activeScenarioLabel: document.getElementById("activeScenarioLabel"),
   scenarioPath: document.getElementById("scenarioPath"),
   scenarioText: document.getElementById("scenarioText"),
   generatedScenarios: document.getElementById("generatedScenarios"),
   scenarioPreview: document.getElementById("scenarioPreview"),
+  parseSummary: document.getElementById("parseSummary"),
   agentOutput: document.getElementById("agentOutput"),
   runOutput: document.getElementById("runOutput"),
-  nativeWindows: document.getElementById("nativeWindows"),
   analysisOutput: document.getElementById("analysisOutput"),
 };
 
 window.__AFSIM_LLM_BOOTED = false;
+
 window.addEventListener("error", (event) => {
   if (els.systemStatus) els.systemStatus.textContent = `前端错误：${event.message}`;
 });
+
 window.addEventListener("unhandledrejection", (event) => {
   if (els.systemStatus) els.systemStatus.textContent = `前端异步错误：${event.reason?.message || event.reason}`;
 });
@@ -265,17 +243,13 @@ function sceneFromParsed(parsed) {
       };
     })
     .filter(Boolean);
-  if (!platforms.length) return { platforms: [], bounds: null };
-  const lats = platforms.map((item) => item.lat);
-  const lons = platforms.map((item) => item.lon);
   return {
     platforms,
-    bounds: {
-      min_lat: Math.min(...lats),
-      max_lat: Math.max(...lats),
-      min_lon: Math.min(...lons),
-      max_lon: Math.max(...lons),
-    },
+    bounds: parsed?.bounds || null,
+    geojson: parsed?.geojson || { type: "FeatureCollection", features: [] },
+    included_files: parsed?.included_files || [],
+    platform_count: parsed?.platform_count || platforms.length,
+    route_count: parsed?.route_count || platforms.filter((item) => item.route?.length > 1).length,
   };
 }
 
@@ -290,6 +264,7 @@ function renderScene(scene) {
   state.activeScene = scene;
   if (!scene?.platforms?.length || !scene.bounds) {
     els.sceneView.innerHTML = `<div class="scene-empty">暂无可显示的 AFSIM 场景数据。保存或选择一个场景后会在这里显示平台部署。</div>`;
+    els.parseSummary.textContent = "等待解析 AFSIM 输入文件。";
     return;
   }
   const width = 1200;
@@ -309,7 +284,7 @@ function renderScene(scene) {
         const p = project(point.lat, point.lon);
         return `${p.x.toFixed(1)},${p.y.toFixed(1)}`;
       });
-      return `<polyline points="${points.join(" ")}" fill="none" stroke="${sideColor(item.side)}" stroke-width="2" stroke-opacity="0.5" />`;
+      return `<polyline points="${points.join(" ")}" fill="none" stroke="${sideColor(item.side)}" stroke-width="2" stroke-opacity="0.55" />`;
     })
     .join("");
   const platforms = scene.platforms
@@ -321,20 +296,27 @@ function renderScene(scene) {
         <g>
           <circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${radius}" fill="${color}" stroke="#0b0c0e" stroke-width="2" />
           <text class="scene-label" x="${(p.x + 12).toFixed(1)}" y="${(p.y - 10).toFixed(1)}">${escapeHtml(item.id)}</text>
-          <text class="scene-label" x="${(p.x + 12).toFixed(1)}" y="${(p.y + 8).toFixed(1)}" fill="#a8b0b7">${escapeHtml(item.side)} / ${escapeHtml(item.category)}</text>
+          <text class="scene-label muted-label" x="${(p.x + 12).toFixed(1)}" y="${(p.y + 8).toFixed(1)}">${escapeHtml(item.side)} / ${escapeHtml(item.category || item.type)}</text>
         </g>
       `;
     })
     .join("");
   els.sceneView.innerHTML = `
-    <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="AFSIM 场景数据视图">
+    <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="AFSIM 场景网页地图">
       <rect x="0" y="0" width="${width}" height="${height}" fill="transparent" />
-      <text x="24" y="34" fill="#a8b0b7" font-size="13">AFSIM 场景数据视图：${scene.platforms.length} 个平台</text>
+      <text x="24" y="34" fill="#a8b0b7" font-size="13">AFSIM Web Map：${scene.platforms.length} 个平台 / ${scene.route_count} 条航路</text>
       <text x="24" y="${height - 24}" fill="#737d86" font-size="12">经度 ${bounds.min_lon.toFixed(4)} 至 ${bounds.max_lon.toFixed(4)} | 纬度 ${bounds.min_lat.toFixed(4)} 至 ${bounds.max_lat.toFixed(4)}</text>
       ${routes}
       ${platforms}
     </svg>
   `;
+  els.parseSummary.textContent = [
+    `平台数量：${scene.platform_count}`,
+    `航路数量：${scene.route_count}`,
+    `GeoJSON 要素：${scene.geojson?.features?.length || 0}`,
+    `递归解析文件：${scene.included_files.length}`,
+    ...scene.included_files.slice(0, 6).map((file) => `- ${file}`),
+  ].join("\n");
 }
 
 function renderParsed(parsed) {
@@ -423,8 +405,7 @@ async function loadHealth() {
   const health = await api("/api/health");
   const afsim = health.afsim || {};
   setStatus(els.missionStatus, afsim.mission_exists, afsim.mission_exists ? "mission OK" : "mission 缺失");
-  setStatus(els.warlockStatus, afsim.warlock_exists, afsim.warlock_exists ? "Warlock OK" : "Warlock 缺失");
-  setStatus(els.mysticStatus, afsim.mystic_exists, afsim.mystic_exists ? "Mystic OK" : "Mystic 缺失");
+  setStatus(els.parserStatus, true, "parser OK");
   setStatus(els.llmStatus, true, "LLM 已配置");
   els.systemStatus.textContent = `AFSIM：${afsim.root || "-"}`;
 }
@@ -452,7 +433,6 @@ async function loadDemos() {
   els.afsimDemo.innerHTML = demos
     .map((demo) => `<option value="${escapeHtml(demo.name)}" data-input="${escapeHtml(demo.default_input)}">${escapeHtml(demo.name)} / ${escapeHtml(demo.default_input)}</option>`)
     .join("");
-  if (demos.length && !state.activeScenarioId) await previewDemo();
 }
 
 async function loadGeneratedScenarios() {
@@ -466,7 +446,6 @@ async function loadGeneratedScenarios() {
 async function loadGeneratedDetail(scenarioId) {
   const detail = await api(`/api/afsim/designs/${encodeURIComponent(scenarioId)}`);
   state.activeScenarioId = detail.scenario_id;
-  state.activeScenarioPath = detail.scenario_path;
   els.activeScenarioLabel.textContent = `${detail.design?.name || detail.scenario_id} | ${detail.input_file}`;
   els.scenarioPath.textContent = detail.scenario_path;
   els.scenarioText.textContent = detail.scenario_text || "";
@@ -496,7 +475,6 @@ async function saveScenario() {
     body: JSON.stringify(collectDesign()),
   });
   state.activeScenarioId = result.scenario_id;
-  state.activeScenarioPath = result.scenario_path;
   await loadGeneratedScenarios();
   await loadGeneratedDetail(result.scenario_id);
   els.runOutput.textContent = `已保存：${result.scenario_path}`;
@@ -513,7 +491,6 @@ async function deleteScenario(scenarioId) {
   await api(`/api/afsim/designs/${encodeURIComponent(scenarioId)}`, { method: "DELETE" });
   if (state.activeScenarioId === scenarioId) {
     state.activeScenarioId = null;
-    state.activeScenarioPath = "";
     els.scenarioText.textContent = "";
     els.scenarioPath.textContent = "scenario.txt";
     renderScene({ platforms: [], bounds: null });
@@ -531,36 +508,7 @@ async function runGeneratedScenario() {
   });
   state.lastRunId = run.run_id;
   els.runOutput.textContent = summarizeRun(run);
-  await refreshNativeStatus();
   return run;
-}
-
-async function launchGeneratedWarlock() {
-  const scenarioId = await ensureActiveScenario();
-  els.runOutput.textContent = `正在启动 Warlock：${scenarioId}`;
-  const result = await api(`/api/afsim/designs/${encodeURIComponent(scenarioId)}/launch-map`, {
-    method: "POST",
-    body: "{}",
-  });
-  els.workspaceMode.value = "native";
-  applyWorkspaceMode();
-  els.runOutput.textContent = `Warlock 已启动，PID=${result.pid}\n场景：${result.scenario_path}`;
-  setTimeout(refreshNativeStatus, 1200);
-  setTimeout(refreshNativeFrame, 1600);
-}
-
-async function launchMystic() {
-  if (!state.lastRunId) await runGeneratedScenario();
-  els.runOutput.textContent = "正在启动 Mystic 回放...";
-  const result = await api("/api/afsim/launch-3d", {
-    method: "POST",
-    body: JSON.stringify({ run_id: state.lastRunId || null }),
-  });
-  els.workspaceMode.value = "native";
-  applyWorkspaceMode();
-  els.runOutput.textContent = `Mystic 已启动，PID=${result.pid}\nAER=${result.aer_path}`;
-  setTimeout(refreshNativeStatus, 1200);
-  setTimeout(refreshNativeFrame, 1600);
 }
 
 async function selectedDemoPayload() {
@@ -589,20 +537,6 @@ async function runDemo() {
   });
   state.lastRunId = run.run_id;
   els.runOutput.textContent = summarizeRun(run);
-}
-
-async function launchDemoWarlock() {
-  const selected = await selectedDemoPayload();
-  els.runOutput.textContent = `正在启动 Warlock Demo：${selected.demo_name}`;
-  const result = await api("/api/afsim/launch-map", {
-    method: "POST",
-    body: JSON.stringify(selected),
-  });
-  els.workspaceMode.value = "native";
-  applyWorkspaceMode();
-  els.runOutput.textContent = `Warlock 已启动，PID=${result.pid}\nDemo：${result.demo_name}/${result.input_file}`;
-  setTimeout(refreshNativeStatus, 1200);
-  setTimeout(refreshNativeFrame, 1600);
 }
 
 async function agentTick() {
@@ -675,53 +609,6 @@ async function analyzeAfsim() {
   ].join("\n");
 }
 
-function refreshNativeFrame() {
-  if (state.nativeStreamUrl || els.nativeDisplay.hidden) return;
-  els.nativeFrame.src = `/api/afsim/native-frame.jpg?title=Warlock&t=${Date.now()}`;
-}
-
-function renderNativeWindows(status) {
-  const rows = [...(status.windows?.warlock || []), ...(status.windows?.mystic || [])];
-  if (!rows.length) {
-    els.nativeWindows.innerHTML = `<div class="list-item"><small>未检测到 Warlock / Mystic 窗口。打开 Warlock 后这里会自动刷新。</small></div>`;
-    return;
-  }
-  els.nativeWindows.innerHTML = rows
-    .map(
-      (window) => `
-        <div class="list-item">
-          <strong>${escapeHtml(window.title)}</strong>
-          <small>${window.width} x ${window.height}</small>
-        </div>
-      `,
-    )
-    .join("");
-}
-
-async function refreshNativeStatus() {
-  const status = await api("/api/afsim/native-display");
-  state.nativeStreamUrl = status.stream_url || "";
-  renderNativeWindows(status);
-  if (state.nativeStreamUrl) {
-    els.nativeIframe.hidden = false;
-    els.nativeFrame.hidden = true;
-    els.nativeIframe.src = state.nativeStreamUrl;
-    els.nativeOverlay.textContent = "AFSIM 原生交互流";
-  } else {
-    els.nativeIframe.hidden = true;
-    els.nativeFrame.hidden = false;
-    els.nativeOverlay.textContent = status.capture_available ? "本机 Warlock/Mystic 窗口捕获" : "当前环境不支持窗口捕获";
-    refreshNativeFrame();
-  }
-}
-
-function applyWorkspaceMode() {
-  const mode = els.workspaceMode.value;
-  els.sceneView.hidden = mode !== "scene";
-  els.nativeDisplay.hidden = mode !== "native";
-  if (mode === "native") refreshNativeStatus().catch((error) => (els.nativeOverlay.textContent = `刷新失败：${error.message}`));
-}
-
 function addPlatform() {
   const template = templateById(els.platformTemplate.value);
   state.platforms.push(makePlatformFromTemplate(template, state.platforms.length));
@@ -765,9 +652,8 @@ function bindEvents() {
   els.addPlatform.addEventListener("click", addPlatform);
   els.saveScenario.addEventListener("click", () => saveScenario().catch((error) => (els.runOutput.textContent = `保存失败：${error.message}`)));
   els.runGenerated.addEventListener("click", () => runGeneratedScenario().catch((error) => (els.runOutput.textContent = `运行失败：${error.message}`)));
-  els.launchGeneratedWarlock.addEventListener("click", () => launchGeneratedWarlock().catch((error) => (els.runOutput.textContent = `启动 Warlock 失败：${error.message}`)));
-  els.launchMystic.addEventListener("click", () => launchMystic().catch((error) => (els.runOutput.textContent = `启动 Mystic 失败：${error.message}`)));
   els.refreshScene.addEventListener("click", () => (state.activeScene ? renderScene(state.activeScene) : renderScene({ platforms: [], bounds: null })));
+  els.fitScene.addEventListener("click", () => (state.activeScene ? renderScene(state.activeScene) : renderScene({ platforms: [], bounds: null })));
   els.agentStep.addEventListener("click", () => agentTick().catch((error) => (els.agentOutput.textContent = `实时指挥失败：${error.message}`)));
   els.agentStart.addEventListener("click", startAgentLoop);
   els.agentStop.addEventListener("click", stopAgentLoop);
@@ -775,16 +661,7 @@ function bindEvents() {
   els.agentReset.addEventListener("click", () => resetAgentSandbox().catch((error) => (els.agentOutput.textContent = `重置失败：${error.message}`)));
   els.previewDemo.addEventListener("click", () => previewDemo().catch((error) => (els.runOutput.textContent = `解析 Demo 失败：${error.message}`)));
   els.runDemo.addEventListener("click", () => runDemo().catch((error) => (els.runOutput.textContent = `运行 Demo 失败：${error.message}`)));
-  els.launchDemoWarlock.addEventListener("click", () => launchDemoWarlock().catch((error) => (els.runOutput.textContent = `启动 Demo 失败：${error.message}`)));
   els.analyzeAfsim.addEventListener("click", () => analyzeAfsim().catch((error) => (els.analysisOutput.textContent = `分析失败：${error.message}`)));
-  els.refreshNative.addEventListener("click", () => {
-    if (els.workspaceMode.value === "scene") {
-      renderScene(state.activeScene);
-    } else {
-      refreshNativeStatus().catch((error) => (els.nativeOverlay.textContent = `刷新失败：${error.message}`));
-    }
-  });
-  els.workspaceMode.addEventListener("change", applyWorkspaceMode);
   els.afsimDemo.addEventListener("change", () => previewDemo().catch((error) => (els.runOutput.textContent = `解析 Demo 失败：${error.message}`)));
 }
 
@@ -797,15 +674,18 @@ async function boot() {
   await loadHealth().catch((error) => {
     els.systemStatus.textContent = `AFSIM 状态读取失败：${error.message}`;
   });
-  const bootResults = await Promise.allSettled([loadDemos(), loadGeneratedScenarios(), refreshNativeStatus()]);
+  const bootResults = await Promise.allSettled([loadDemos(), loadGeneratedScenarios()]);
   const failures = bootResults.filter((item) => item.status === "rejected");
   if (failures.length) {
     els.runOutput.textContent = failures.map((item) => `初始化部分失败：${item.reason?.message || item.reason}`).join("\n");
   }
-  applyWorkspaceMode();
-  setInterval(refreshNativeFrame, 2500);
-  setInterval(() => refreshNativeStatus().catch(() => {}), 7000);
   window.__AFSIM_LLM_BOOTED = true;
+  document.documentElement.dataset.afsimBooted = "true";
+  if (!state.activeScenarioId && els.afsimDemo.options.length) {
+    previewDemo().catch((error) => {
+      els.runOutput.textContent = `初始 Demo 解析失败：${error.message}`;
+    });
+  }
 }
 
 boot().catch((error) => {

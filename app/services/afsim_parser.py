@@ -59,12 +59,18 @@ def _strip_comment(line: str) -> str:
     return line.split("#", 1)[0].strip()
 
 
-def _read_lines_recursive(path: Path, visited: set[Path] | None = None) -> list[tuple[Path, str]]:
+def _read_lines_recursive(
+    path: Path,
+    visited: set[Path] | None = None,
+    included_files: list[str] | None = None,
+) -> list[tuple[Path, str]]:
     visited = visited or set()
+    included_files = included_files if included_files is not None else []
     path = path.resolve()
     if path in visited or not path.exists():
         return []
     visited.add(path)
+    included_files.append(str(path))
     rows: list[tuple[Path, str]] = []
     for raw in path.read_text(encoding="utf-8", errors="ignore").splitlines():
         line = _strip_comment(raw)
@@ -73,16 +79,71 @@ def _read_lines_recursive(path: Path, visited: set[Path] | None = None) -> list[
         include = INCLUDE_RE.match(line)
         if include:
             include_path = (path.parent / include.group(1).replace("\\", "/")).resolve()
-            rows.extend(_read_lines_recursive(include_path, visited))
+            rows.extend(_read_lines_recursive(include_path, visited, included_files))
         else:
             rows.append((path, line))
     return rows
 
 
+def _bounds(platforms: list[dict[str, Any]]) -> dict[str, float] | None:
+    points = [
+        point
+        for platform in platforms
+        for point in platform.get("positions", [])
+        if point.get("lat") is not None and point.get("lon") is not None
+    ]
+    if not points:
+        return None
+    lats = [float(point["lat"]) for point in points]
+    lons = [float(point["lon"]) for point in points]
+    return {
+        "min_lat": min(lats),
+        "max_lat": max(lats),
+        "min_lon": min(lons),
+        "max_lon": max(lons),
+    }
+
+
+def _geojson(platforms: list[dict[str, Any]]) -> dict[str, Any]:
+    features: list[dict[str, Any]] = []
+    for platform in platforms:
+        positions = platform.get("positions", [])
+        if not positions:
+            continue
+        first = positions[0]
+        properties = {
+            "id": platform.get("id", ""),
+            "type": platform.get("type", ""),
+            "side": platform.get("side", "neutral"),
+            "category": platform.get("category", ""),
+            "source": platform.get("source", ""),
+        }
+        features.append(
+            {
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [first["lon"], first["lat"], first.get("alt_m", 0.0)]},
+                "properties": {**properties, "feature_type": "platform"},
+            }
+        )
+        if len(positions) > 1:
+            features.append(
+                {
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "LineString",
+                        "coordinates": [[point["lon"], point["lat"], point.get("alt_m", 0.0)] for point in positions],
+                    },
+                    "properties": {**properties, "feature_type": "route"},
+                }
+            )
+    return {"type": "FeatureCollection", "features": features}
+
+
 def parse_scenario_file(path: Path) -> dict[str, Any]:
     platforms: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
-    for source, line in _read_lines_recursive(path):
+    included_files: list[str] = []
+    for source, line in _read_lines_recursive(path, included_files=included_files):
         platform_match = PLATFORM_RE.match(line)
         if platform_match:
             current = {
@@ -114,7 +175,18 @@ def parse_scenario_file(path: Path) -> dict[str, Any]:
             position = _parse_position(line)
             if position:
                 current["positions"].append(position)
-    return {"input_file": str(path), "platforms": platforms, "platform_count": len(platforms)}
+    for platform in platforms:
+        positions = platform.get("positions", [])
+        platform["route"] = positions[1:] if len(positions) > 1 else []
+    return {
+        "input_file": str(path),
+        "included_files": included_files,
+        "platforms": platforms,
+        "platform_count": len(platforms),
+        "route_count": sum(1 for platform in platforms if platform.get("route")),
+        "bounds": _bounds(platforms),
+        "geojson": _geojson(platforms),
+    }
 
 
 def parse_demo_scenario(demo_name: str, input_file: str | None = None) -> dict[str, Any]:
