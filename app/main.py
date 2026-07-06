@@ -27,6 +27,7 @@ from app.services.afsim_design import (
     scene_overview,
 )
 from app.services.afsim_parser import parse_demo_scenario, parse_scenario_file
+from app.services.afsim_realtime import build_realtime_frame
 from app.services.afsim_runner import (
     discover_demos,
     list_runs,
@@ -334,6 +335,44 @@ async def state_socket(websocket: WebSocket) -> None:
             await asyncio.sleep(0.2)
     except WebSocketDisconnect:
         return
+
+
+@app.websocket("/ws/afsim/realtime")
+async def afsim_realtime_socket(websocket: WebSocket) -> None:
+    await websocket.accept()
+    query = websocket.query_params
+    scenario_id = query.get("scenario_id")
+    demo_name = query.get("demo_name") or "simple_scenario"
+    input_file = query.get("input_file")
+    interval_seconds = float(query.get("interval_seconds") or 0.75)
+    loop_seconds = float(query.get("loop_seconds") or 120.0)
+    try:
+        if scenario_id:
+            scenario = read_generated_scenario(scenario_id)
+            parsed = parse_scenario_file(Path(str(scenario["scenario_path"])))
+            source = f"generated:{scenario_id}"
+        else:
+            parsed = parse_demo_scenario(demo_name, input_file)
+            source = f"demo:{demo_name}/{parsed.get('input_name', input_file or '')}"
+        frame_id = 0
+        sim_time = 0.0
+        while True:
+            await websocket.send_json(
+                build_realtime_frame(
+                    parsed,
+                    sim_time,
+                    frame_id=frame_id,
+                    source=source,
+                    loop_seconds=loop_seconds,
+                )
+            )
+            frame_id += 1
+            sim_time += interval_seconds
+            await asyncio.sleep(max(0.1, interval_seconds))
+    except WebSocketDisconnect:
+        return
+    except Exception as exc:
+        await websocket.send_json({"error": str(exc), "source": "afsim-realtime"})
 
 
 def main() -> None:

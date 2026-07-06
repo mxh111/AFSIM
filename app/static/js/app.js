@@ -1,3 +1,5 @@
+import { disposeOperationalMap, renderOperationalMap, sideColor } from "./map_renderer.js";
+
 const DEFAULT_TEMPLATES = [
   { id: "blue_fighter", label: "蓝方战斗机", type_name: "WEB_AIRCRAFT", side: "blue", category: "fighter", icon: "F-22", altitude_m: 9000, speed_kts: 420, heading_deg: 90 },
   { id: "red_fighter", label: "红方战斗机", type_name: "WEB_AIRCRAFT", side: "red", category: "fighter", icon: "SU-27", altitude_m: 8500, speed_kts: 430, heading_deg: 270 },
@@ -14,6 +16,10 @@ const state = {
   designs: [],
   activeScenarioId: null,
   activeScene: null,
+  mapMode: "split",
+  currentFrame: null,
+  liveSocket: null,
+  liveActive: false,
   lastRunId: null,
   pendingCommands: [],
   agentTimer: null,
@@ -33,6 +39,10 @@ const els = {
   saveScenario: document.getElementById("saveScenario"),
   runGenerated: document.getElementById("runGenerated"),
   refreshScene: document.getElementById("refreshScene"),
+  view2d: document.getElementById("view2d"),
+  view3d: document.getElementById("view3d"),
+  viewSplit: document.getElementById("viewSplit"),
+  liveScene: document.getElementById("liveScene"),
   fitScene: document.getElementById("fitScene"),
   agentObjective: document.getElementById("agentObjective"),
   agentSide: document.getElementById("agentSide"),
@@ -253,68 +263,21 @@ function sceneFromParsed(parsed) {
   };
 }
 
-function sideColor(side) {
-  if (side === "blue") return "#5aa7ff";
-  if (side === "red") return "#ff7777";
-  if (side === "green") return "#65d38b";
-  return "#c2c8ce";
-}
-
 function renderScene(scene) {
   state.activeScene = scene;
   if (!scene?.platforms?.length || !scene.bounds) {
+    disposeOperationalMap();
     els.sceneView.innerHTML = `<div class="scene-empty">暂无可显示的 AFSIM 场景数据。保存或选择一个场景后会在这里显示平台部署。</div>`;
     els.parseSummary.textContent = "等待解析 AFSIM 输入文件。";
     return;
   }
-  const width = 1200;
-  const height = 720;
-  const pad = 72;
-  const bounds = scene.bounds;
-  const lonSpan = Math.max(0.01, bounds.max_lon - bounds.min_lon);
-  const latSpan = Math.max(0.01, bounds.max_lat - bounds.min_lat);
-  const project = (lat, lon) => ({
-    x: pad + ((lon - bounds.min_lon) / lonSpan) * (width - pad * 2),
-    y: height - pad - ((lat - bounds.min_lat) / latSpan) * (height - pad * 2),
-  });
-  const routes = scene.platforms
-    .filter((item) => item.route?.length > 1)
-    .map((item) => {
-      const points = item.route.map((point) => {
-        const p = project(point.lat, point.lon);
-        return `${p.x.toFixed(1)},${p.y.toFixed(1)}`;
-      });
-      return `<polyline points="${points.join(" ")}" fill="none" stroke="${sideColor(item.side)}" stroke-width="2" stroke-opacity="0.55" />`;
-    })
-    .join("");
-  const platforms = scene.platforms
-    .map((item) => {
-      const p = project(item.lat, item.lon);
-      const color = sideColor(item.side);
-      const radius = item.category.includes("radar") || item.category.includes("c2") ? 9 : 7;
-      return `
-        <g>
-          <circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${radius}" fill="${color}" stroke="#0b0c0e" stroke-width="2" />
-          <text class="scene-label" x="${(p.x + 12).toFixed(1)}" y="${(p.y - 10).toFixed(1)}">${escapeHtml(item.id)}</text>
-          <text class="scene-label muted-label" x="${(p.x + 12).toFixed(1)}" y="${(p.y + 8).toFixed(1)}">${escapeHtml(item.side)} / ${escapeHtml(item.category || item.type)}</text>
-        </g>
-      `;
-    })
-    .join("");
-  els.sceneView.innerHTML = `
-    <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="AFSIM 场景网页地图">
-      <rect x="0" y="0" width="${width}" height="${height}" fill="transparent" />
-      <text x="24" y="34" fill="#a8b0b7" font-size="13">AFSIM Web Map：${scene.platforms.length} 个平台 / ${scene.route_count} 条航路</text>
-      <text x="24" y="${height - 24}" fill="#737d86" font-size="12">经度 ${bounds.min_lon.toFixed(4)} 至 ${bounds.max_lon.toFixed(4)} | 纬度 ${bounds.min_lat.toFixed(4)} 至 ${bounds.max_lat.toFixed(4)}</text>
-      ${routes}
-      ${platforms}
-    </svg>
-  `;
+  renderOperationalMap(els.sceneView, scene, { mode: state.mapMode, frame: state.currentFrame });
   els.parseSummary.textContent = [
     `平台数量：${scene.platform_count}`,
     `航路数量：${scene.route_count}`,
     `GeoJSON 要素：${scene.geojson?.features?.length || 0}`,
     `递归解析文件：${scene.included_files.length}`,
+    state.currentFrame ? `实时帧：T+${Number(state.currentFrame.sim_time || 0).toFixed(1)}s / ${state.currentFrame.source}` : "实时帧：未连接",
     ...scene.included_files.slice(0, 6).map((file) => `- ${file}`),
   ].join("\n");
 }
@@ -365,6 +328,83 @@ function renderGeneratedScenarios() {
       `,
     )
     .join("");
+}
+
+function renderMapModeButtons() {
+  els.view2d.classList.toggle("active", state.mapMode === "2d");
+  els.view3d.classList.toggle("active", state.mapMode === "3d");
+  els.viewSplit.classList.toggle("active", state.mapMode === "split");
+}
+
+function setMapMode(mode) {
+  state.mapMode = mode;
+  renderMapModeButtons();
+  renderScene(state.activeScene || { platforms: [], bounds: null });
+}
+
+function stopRealtimeStream() {
+  if (state.liveSocket) {
+    state.liveSocket.close();
+  }
+  state.liveSocket = null;
+  state.liveActive = false;
+  els.liveScene.classList.remove("active");
+  els.liveScene.textContent = "实时";
+}
+
+async function realtimeParams() {
+  const params = new URLSearchParams({ interval_seconds: "0.75", loop_seconds: "120" });
+  if (state.activeScenarioId) {
+    params.set("scenario_id", state.activeScenarioId);
+    return params;
+  }
+  const selected = await selectedDemoPayload();
+  params.set("demo_name", selected.demo_name);
+  if (selected.input_file) params.set("input_file", selected.input_file);
+  return params;
+}
+
+async function startRealtimeStream() {
+  stopRealtimeStream();
+  const params = await realtimeParams();
+  const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+  const socket = new WebSocket(`${protocol}://${window.location.host}/ws/afsim/realtime?${params.toString()}`);
+  state.liveSocket = socket;
+  state.liveActive = true;
+  els.liveScene.classList.add("active");
+  els.liveScene.textContent = "停止";
+  socket.addEventListener("message", (event) => {
+    const frame = JSON.parse(event.data);
+    if (frame.error) {
+      els.runOutput.textContent = `实时态势失败：${frame.error}`;
+      stopRealtimeStream();
+      return;
+    }
+    state.currentFrame = frame;
+    if (state.activeScene) renderScene(state.activeScene);
+  });
+  socket.addEventListener("close", () => {
+    if (state.liveSocket === socket) {
+      state.liveSocket = null;
+      state.liveActive = false;
+      els.liveScene.classList.remove("active");
+      els.liveScene.textContent = "实时";
+    }
+  });
+  socket.addEventListener("error", () => {
+    els.runOutput.textContent = "实时态势连接失败。";
+  });
+}
+
+function toggleRealtimeStream() {
+  if (state.liveActive) {
+    stopRealtimeStream();
+    return;
+  }
+  startRealtimeStream().catch((error) => {
+    stopRealtimeStream();
+    els.runOutput.textContent = `实时态势启动失败：${error.message}`;
+  });
 }
 
 function summarizeRun(run) {
@@ -444,6 +484,8 @@ async function loadGeneratedScenarios() {
 }
 
 async function loadGeneratedDetail(scenarioId) {
+  stopRealtimeStream();
+  state.currentFrame = null;
   const detail = await api(`/api/afsim/designs/${encodeURIComponent(scenarioId)}`);
   state.activeScenarioId = detail.scenario_id;
   els.activeScenarioLabel.textContent = `${detail.design?.name || detail.scenario_id} | ${detail.input_file}`;
@@ -490,6 +532,8 @@ async function deleteScenario(scenarioId) {
   if (!scenarioId) return;
   await api(`/api/afsim/designs/${encodeURIComponent(scenarioId)}`, { method: "DELETE" });
   if (state.activeScenarioId === scenarioId) {
+    stopRealtimeStream();
+    state.currentFrame = null;
     state.activeScenarioId = null;
     els.scenarioText.textContent = "";
     els.scenarioPath.textContent = "scenario.txt";
@@ -518,6 +562,8 @@ async function selectedDemoPayload() {
 }
 
 async function previewDemo() {
+  stopRealtimeStream();
+  state.currentFrame = null;
   const selected = await selectedDemoPayload();
   const parsed = await api(`/api/afsim/scenario?demo_name=${encodeURIComponent(selected.demo_name)}&input_file=${encodeURIComponent(selected.input_file)}`);
   state.activeScenarioId = null;
@@ -654,6 +700,10 @@ function bindEvents() {
   els.runGenerated.addEventListener("click", () => runGeneratedScenario().catch((error) => (els.runOutput.textContent = `运行失败：${error.message}`)));
   els.refreshScene.addEventListener("click", () => (state.activeScene ? renderScene(state.activeScene) : renderScene({ platforms: [], bounds: null })));
   els.fitScene.addEventListener("click", () => (state.activeScene ? renderScene(state.activeScene) : renderScene({ platforms: [], bounds: null })));
+  els.view2d.addEventListener("click", () => setMapMode("2d"));
+  els.view3d.addEventListener("click", () => setMapMode("3d"));
+  els.viewSplit.addEventListener("click", () => setMapMode("split"));
+  els.liveScene.addEventListener("click", toggleRealtimeStream);
   els.agentStep.addEventListener("click", () => agentTick().catch((error) => (els.agentOutput.textContent = `实时指挥失败：${error.message}`)));
   els.agentStart.addEventListener("click", startAgentLoop);
   els.agentStop.addEventListener("click", stopAgentLoop);
@@ -669,6 +719,7 @@ async function boot() {
   assertRequiredElements();
   bindEvents();
   stopAgentLoop();
+  renderMapModeButtons();
   renderScene({ platforms: [], bounds: null });
   await loadTemplates();
   await loadHealth().catch((error) => {

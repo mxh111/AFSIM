@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>AFSIM_LLM</title>
-    <link rel="stylesheet" href="/static/css/app.css?v=20260706_web_map3" />
+    <link rel="stylesheet" href="/static/css/app.css?v=20260706_afsim_map1" />
   </head>
   <body>
     <div class="app-shell">
@@ -98,6 +98,10 @@
               <span id="activeScenarioLabel">未选择场景</span>
             </div>
             <div class="map-actions">
+              <button id="view2d" type="button">2D</button>
+              <button id="view3d" type="button">3D</button>
+              <button id="viewSplit" type="button">分屏</button>
+              <button id="liveScene" type="button">实时</button>
               <button id="fitScene" type="button">适配视图</button>
             </div>
           </div>
@@ -147,6 +151,6 @@
       </main>
     </div>
 
-    <script src="/static/js/app.js?v=20260706_web_map3"></script>
+    <script type="module" src="/static/js/app.js?v=20260706_afsim_map1"></script>
   </body>
 </html>

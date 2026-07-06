@@ -5,6 +5,7 @@ from app.models import AFSimDesignedPlatform, AFSimRoutePoint, AFSimScenarioDesi
 from app.services.afsim_design import generate_scenario, read_generated_scenario
 from app.services.afsim_parser import parse_demo_scenario
 from app.services.afsim_parser import parse_scenario_file
+from app.services.afsim_realtime import build_realtime_frame
 from app.services.afsim_runner import discover_demos, run_generated_scenario, status
 from app.services.simulation import SimulationEngine
 from app.services.storage import Storage
@@ -48,6 +49,18 @@ def test_afsim_scenario_parser_extracts_platforms():
     assert parsed["geojson"]["type"] == "FeatureCollection"
     assert parsed["geojson"]["features"]
     assert "route_count" in parsed
+
+
+def test_afsim_realtime_frame_uses_parsed_routes():
+    parsed = parse_demo_scenario("simple_scenario", "simple_scenario.txt")
+    frame = build_realtime_frame(parsed, 12.5, frame_id=7, loop_seconds=60)
+    assert frame["frame_id"] == 7
+    assert frame["source"] == "parser-preview"
+    assert frame["authoritative"] is False
+    assert frame["entity_count"] == len(frame["entities"])
+    assert frame["entities"]
+    first = frame["entities"][0]
+    assert {"id", "side", "lat", "lon", "route"}.issubset(first)
 
 
 def test_generated_afsim_design_runs_with_mission():

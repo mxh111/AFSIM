@@ -285,25 +285,85 @@ h2 {
 
 .map-actions {
   display: grid;
-  grid-template-columns: 120px auto;
+  grid-template-columns: repeat(5, auto);
   gap: 8px;
+}
+
+.map-actions button.active {
+  border-color: var(--amber);
+  color: #ffe0a4;
+  background: #373126;
 }
 
 .scene-view {
   position: relative;
   min-height: 0;
   overflow: hidden;
-  background:
-    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px),
-    #07090b;
-  background-size: 40px 40px;
+  background: #05080a;
 }
 
-.scene-view svg {
+.map-stage {
+  position: relative;
+  display: grid;
+  width: 100%;
+  height: 100%;
+  min-height: 360px;
+  background:
+    radial-gradient(circle at 18% 16%, rgba(90, 167, 255, 0.12), transparent 28%),
+    linear-gradient(135deg, rgba(101, 211, 139, 0.06), transparent 34%),
+    #05080a;
+}
+
+.map-mode-split {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.map-mode-2d,
+.map-mode-3d {
+  grid-template-columns: 1fr;
+}
+
+.map-mode-2d .map-pane-3d,
+.map-mode-3d .map-pane-2d {
+  display: none;
+}
+
+.map-pane {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.map-pane + .map-pane {
+  border-left: 1px solid rgba(240, 189, 95, 0.24);
+}
+
+.afsim-map-canvas,
+.map-pane-3d canvas {
   display: block;
   width: 100%;
   height: 100%;
+}
+
+.map-hud {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100% - 28px);
+  border: 1px solid rgba(240, 189, 95, 0.34);
+  border-radius: 6px;
+  background: rgba(7, 13, 15, 0.84);
+  color: var(--muted);
+  padding: 7px 10px;
+  font-size: 12px;
+}
+
+.map-hud strong {
+  color: var(--text);
 }
 
 .scene-empty {
@@ -498,6 +558,15 @@ h2 {
   }
 
   .map-actions {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .map-mode-split {
+    grid-template-columns: 1fr;
+  }
+
+  .map-pane + .map-pane {
+    border-top: 1px solid rgba(240, 189, 95, 0.24);
+    border-left: 0;
   }
 }
