@@ -3,220 +3,179 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>AFSIM_LLM 仿真地图工作台</title>
-    <link rel="stylesheet" href="/static/css/app.css?v=20260707_workbench2" />
+    <title>AFSIM 仿真控制台</title>
+    <link rel="stylesheet" href="/static/css/app.css?v=20260707_afsim_console" />
     <link rel="icon" href="data:," />
   </head>
   <body>
     <div class="app-shell">
       <header class="topbar">
-        <div class="topbar-title">
-          <strong>AFSIM_LLM 仿真地图工作台</strong>
-          <span id="systemStatus">正在读取本地 AFSIM 环境...</span>
+        <div class="brand">
+          <strong>AFSIM 仿真控制台</strong>
+          <span id="systemStatus">正在读取本机 AFSIM 环境...</span>
         </div>
-        <div class="topbar-controls">
-          <label>
-            场景域
-            <select id="domainSelect">
-              <option value="earth">地球地理空间</option>
-              <option value="near_space">临近空间</option>
-              <option value="space">太空空间</option>
-            </select>
-          </label>
-          <span id="missionStatus">mission</span>
-          <span id="parserStatus">parser</span>
-          <span id="llmStatus">LLM</span>
-        </div>
+        <section class="status-grid" aria-label="AFSIM 状态">
+          <div class="status-card wide">
+            <span>当前想定</span>
+            <strong id="currentScenario">未加载</strong>
+          </div>
+          <div class="status-card wide">
+            <span>AFSIM 根目录</span>
+            <strong id="afsimRoot">-</strong>
+          </div>
+          <div class="status-card">
+            <span>mission.exe</span>
+            <strong id="missionExeStatus">未知</strong>
+          </div>
+          <div class="status-card">
+            <span>运行状态</span>
+            <strong id="runStatus">idle</strong>
+          </div>
+          <div class="status-card">
+            <span>run_id / job_id</span>
+            <strong id="runId">-</strong>
+          </div>
+          <div class="status-card">
+            <span>returncode</span>
+            <strong id="returnCode">-</strong>
+          </div>
+          <div class="status-card">
+            <span>数据源模式</span>
+            <strong id="sourceMode">设计预览</strong>
+          </div>
+          <div class="status-card">
+            <span>仿真时间</span>
+            <strong id="simTime">T+0.0s</strong>
+          </div>
+          <div class="status-card">
+            <span>帧 / 事件</span>
+            <strong><b id="frameCount">0</b> / <b id="eventCount">0</b></strong>
+          </div>
+          <div class="status-card">
+            <span>底图</span>
+            <strong id="basemapStatus">检测中</strong>
+          </div>
+        </section>
       </header>
 
       <main class="workspace">
         <aside class="panel left-panel">
-          <nav class="tabbar" aria-label="左侧功能">
-            <button class="active" type="button" data-left-tab="layers">图层</button>
-            <button type="button" data-left-tab="assets">资源</button>
-            <button type="button" data-left-tab="scenes">场景</button>
-          </nav>
-
-          <section class="tab-panel active" data-left-panel="layers">
+          <section class="panel-section">
             <div class="section-head">
-              <h2>图层树</h2>
-              <button id="persistLayers" class="mini-button" type="button">保存状态</button>
+              <h2>想定选择</h2>
+              <button id="reloadWorkbenchBtn" type="button" class="small-button">刷新</button>
             </div>
-            <div id="layerTree" class="layer-tree"></div>
-            <div class="filter-grid">
-              <label><input id="filterBlue" type="checkbox" checked /> 蓝方</label>
-              <label><input id="filterRed" type="checkbox" checked /> 红方</label>
-              <label><input id="filterNeutral" type="checkbox" checked /> 中立</label>
-              <label><input id="filterAir" type="checkbox" checked /> 空中</label>
-              <label><input id="filterGround" type="checkbox" checked /> 地面</label>
-              <label><input id="filterSea" type="checkbox" checked /> 海上</label>
-            </div>
+            <label class="field">
+              <span>官方 Demo</span>
+              <select id="demoSelect"></select>
+            </label>
+            <label class="field">
+              <span>生成场景</span>
+              <select id="generatedSelect"></select>
+            </label>
+            <label class="field">
+              <span>mission.exe 超时 (秒)</span>
+              <input id="timeoutInput" type="number" min="5" max="1800" value="180" />
+            </label>
           </section>
 
-          <section class="tab-panel" data-left-panel="assets">
-            <div class="section-head">
-              <h2>资源库</h2>
-              <button id="addPlatform" class="mini-button" type="button">添加</button>
+          <section class="panel-section">
+            <h2>权威运行</h2>
+            <div class="button-stack">
+              <button id="runDemoBtn" type="button" class="primary-button">运行当前 Demo</button>
+              <button id="runGeneratedBtn" type="button">运行生成场景</button>
+              <button id="refreshJobBtn" type="button">刷新作业 / 复盘</button>
             </div>
-            <label class="field">
-              <span>平台模板</span>
-              <select id="platformTemplate"></select>
-            </label>
-            <div id="platformEditor" class="platform-editor"></div>
-            <div class="button-grid">
-              <button id="saveScenario" type="button">生成 AFSIM 场景</button>
-              <button id="saveDraft" type="button">保存中间 JSON</button>
-            </div>
+            <p class="hint">这些按钮调用 mission.exe job 接口。运行中只展示 AFSIM 作业状态、日志和输出文件，不用本地沙盘冒充仿真。</p>
           </section>
 
-          <section class="tab-panel" data-left-panel="scenes">
-            <h2>场景设计参数</h2>
-            <label class="field">
-              <span>想定名称</span>
-              <input id="designName" value="web_air_patrol" />
-            </label>
-            <label class="field">
-              <span>说明</span>
-              <textarea id="designDescription" rows="2">网页端编辑并转换为 AFSIM 输入文件的仿真场景</textarea>
-            </label>
-            <label class="field">
-              <span>仿真时长 秒</span>
-              <input id="endTime" type="number" min="1" max="86400" value="600" />
-            </label>
-
-            <div class="section-head space-top">
-              <h2>生成场景库</h2>
-              <button id="runGenerated" class="mini-button" type="button">运行</button>
+          <section class="panel-section">
+            <h2>预览与播放</h2>
+            <div class="button-stack">
+              <button id="previewStreamBtn" type="button">开启设计预览流</button>
+              <button id="playReplayBtn" type="button">播放 AFSIM 复盘</button>
+              <button id="stopPlaybackBtn" type="button">停止预览 / 播放</button>
             </div>
-            <div id="generatedScenarios" class="list compact-list"></div>
+            <p class="hint">预览流来自解析后的航路，不是 AFSIM 真实运行流。</p>
+          </section>
 
-            <div class="section-head space-top">
-              <h2>官方 AFSIM Demo</h2>
-              <button id="previewDemo" class="mini-button" type="button">载入</button>
-            </div>
-            <label class="field">
-              <span>Demo 输入</span>
-              <select id="afsimDemo"></select>
-            </label>
-            <button id="runDemo" class="wide-button" type="button">运行当前 Demo</button>
-
-            <h2 class="space-top">草稿与审计</h2>
-            <div id="draftList" class="list compact-list"></div>
+          <section class="panel-section">
+            <h2>图层开关</h2>
+            <div id="layerList" class="layer-list"></div>
           </section>
         </aside>
 
         <section class="map-panel">
           <div class="map-toolbar">
-            <div class="map-title">
-              <strong id="activeScenarioTitle">AFSIM 作战态势</strong>
-              <span id="activeScenarioLabel">等待载入场景</span>
+            <div>
+              <strong id="mapTitle">主态势地图</strong>
+              <span id="mapSubtitle">默认 2D AFSIM 态势视图</span>
             </div>
-            <div class="map-actions">
-              <button id="view2d" type="button">2D</button>
-              <button id="view25d" type="button">2.5D</button>
-              <button id="view3d" type="button">3D</button>
-              <button id="viewSplit" type="button">分屏</button>
-              <button id="liveScene" type="button">实时</button>
-              <button id="followTarget" type="button">跟随</button>
-              <button id="measureTool" type="button" title="距离/方位测量" aria-label="距离/方位测量">测量</button>
-              <button id="boxSelect" type="button">框选</button>
-              <button id="editTarget" type="button" title="受控位置编辑预览" aria-label="受控位置编辑预览">编辑</button>
-              <button id="fitScene" type="button">复位</button>
+            <div class="map-toolbar-actions">
+              <button id="fitMapBtn" type="button">复位视图</button>
+              <button id="refreshReplayBtn" type="button">加载最新复盘</button>
             </div>
           </div>
-
-          <div id="sceneView" class="scene-view"></div>
-
-          <div class="bottom-console">
-            <div class="sim-controls" aria-label="仿真控制条">
-              <button id="simStart" type="button">启动</button>
-              <button id="simPause" type="button">暂停</button>
-              <button id="simResume" type="button">继续</button>
-              <button id="simSlower" type="button">减速</button>
-              <button id="simFaster" type="button">加速</button>
-              <button id="simStep" type="button">单步</button>
-              <button id="simReset" type="button">复位</button>
-              <button id="simStop" type="button">终止</button>
+          <div class="map-wrap">
+            <div id="sceneView" class="scene-view"></div>
+            <div id="mapHud" class="map-hud-panel">
+              <span id="hudSource">source: design-preview</span>
+              <span id="hudTime">sim_time: 0.0</span>
+              <span id="hudEntities">entity_count: 0</span>
+              <span id="hudEvents">event_count: 0</span>
             </div>
-            <div class="timeline-strip">
+            <div id="noFramesNotice" class="no-frames hidden"></div>
+          </div>
+          <div class="timeline-panel">
+            <div class="timeline-row">
               <span id="timeLabel">T+0.0s</span>
-              <input id="timelineRange" type="range" min="0" max="600" value="0" />
-              <span id="playSpeedLabel">1.0x</span>
-              <span id="fpsLabel">FPS 0</span>
-              <span id="targetCountLabel">目标 0</span>
-              <span id="eventCountLabel">事件 0</span>
+              <input id="timelineRange" type="range" min="0" max="600" step="0.1" value="0" />
+              <span id="timelineEnd">600.0s</span>
             </div>
-            <div id="eventLog" class="event-log"></div>
           </div>
         </section>
 
         <aside class="panel right-panel">
-          <nav class="tabbar" aria-label="右侧态势">
-            <button class="active" type="button" data-right-tab="targets">目标</button>
-            <button type="button" data-right-tab="events">事件</button>
-            <button type="button" data-right-tab="chains">链路</button>
-            <button type="button" data-right-tab="llm">LLM</button>
-          </nav>
-
-          <section class="tab-panel active" data-right-panel="targets">
+          <section class="panel-section">
             <div class="section-head">
-              <h2>目标列表</h2>
-              <span id="targetSummary">0</span>
+              <h2>目标详情</h2>
+              <span id="targetCount">0</span>
             </div>
-            <div id="targetList" class="table-list"></div>
-            <h2 class="space-top">目标属性</h2>
-            <div id="targetProperties" class="property-grid"></div>
-            <div class="section-head space-top">
-              <h2>编辑预览</h2>
-              <span id="patchSummary">0 patch</span>
-            </div>
-            <div id="targetEditPanel" class="target-edit-panel">
-              <div class="edit-grid">
-                <label>纬度<input id="editLat" type="number" step="0.000001" min="-90" max="90" /></label>
-                <label>经度<input id="editLon" type="number" step="0.000001" min="-180" max="180" /></label>
-                <label>高度 m<input id="editAlt" type="number" step="1" min="0" /></label>
-                <label>航向 deg<input id="editHeading" type="number" step="0.1" min="0" max="360" /></label>
-              </div>
-              <div class="button-grid">
-                <button id="previewEdit" type="button">预览 patch</button>
-                <button id="commitEdit" type="button">保存草稿</button>
-                <button id="undoEdit" type="button">撤销预览</button>
-                <button id="clearPatches" type="button">清空 patch</button>
-              </div>
-              <pre id="patchPreview" class="patch-preview"></pre>
-            </div>
+            <div id="targetList" class="target-list"></div>
+            <div id="targetDetails" class="details-grid"></div>
           </section>
 
-          <section class="tab-panel" data-right-panel="events">
+          <section class="panel-section">
             <div class="section-head">
-              <h2>事件时间线</h2>
-              <button id="loadReplay" class="mini-button" type="button">刷新复盘</button>
+              <h2>事件流</h2>
+              <span id="eventSummary">0</span>
             </div>
-            <div id="eventList" class="list"></div>
+            <div id="eventList" class="event-list"></div>
           </section>
 
-          <section class="tab-panel" data-right-panel="chains">
-            <h2>打击链 / 观测链 / 通信链</h2>
-            <div id="chainList" class="list"></div>
-          </section>
-
-          <section class="tab-panel" data-right-panel="llm">
-            <h2>当前态势解释</h2>
-            <textarea id="analysisPrompt" rows="4">请结合当前 AFSIM 运行输出、事件链和地图态势，解释关键链路状态与下一步仿真工程建议。</textarea>
-            <button id="analyzeAfsim" class="wide-button" type="button">分析最近运行</button>
-            <div id="analysisOutput" class="output"></div>
-            <h2 class="space-top">指挥 Agent</h2>
-            <textarea id="agentObjective" rows="3">保持蓝方传感器覆盖连续，持续识别红方目标，并给出下一步仿真内指挥建议。</textarea>
-            <div class="button-grid">
-              <button id="agentStep" type="button">单步指挥</button>
-              <button id="agentReset" type="button">重置沙盘</button>
-            </div>
-            <div id="agentOutput" class="output"></div>
+          <section class="panel-section">
+            <h2>探测 / 通信 / 武器链路</h2>
+            <div id="chainList" class="chain-list"></div>
           </section>
         </aside>
       </main>
+
+      <footer class="bottom-console">
+        <section>
+          <div class="console-title">mission.exe 日志尾部</div>
+          <pre id="missionLog">等待 AFSIM 作业...</pre>
+        </section>
+        <section>
+          <div class="console-title">输出文件</div>
+          <div id="outputFiles" class="output-list">等待输出文件...</div>
+        </section>
+        <section>
+          <div class="console-title">错误 / 警告诊断</div>
+          <pre id="diagnostics">暂无诊断。</pre>
+        </section>
+      </footer>
     </div>
 
-    <script type="module" src="/static/js/app.js?v=20260707_workbench2"></script>
+    <script type="module" src="/static/js/app.js?v=20260707_afsim_console"></script>
   </body>
 </html>

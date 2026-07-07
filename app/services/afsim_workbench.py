@@ -846,7 +846,7 @@ def _events_from_run(run: dict[str, Any], limit: int = 180) -> list[dict[str, An
 
 
 def latest_replay() -> dict[str, Any]:
-    return build_latest_replay(list_runs(25))
+    return build_latest_replay(list_runs(100))
 
 
 def replay_for_run(run_id: str) -> dict[str, Any]:

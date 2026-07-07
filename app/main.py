@@ -574,8 +574,9 @@ async def state_socket(websocket: WebSocket) -> None:
         return
 
 
+@app.websocket("/ws/afsim/preview")
 @app.websocket("/ws/afsim/realtime")
-async def afsim_realtime_socket(websocket: WebSocket) -> None:
+async def afsim_preview_socket(websocket: WebSocket) -> None:
     await websocket.accept()
     query = websocket.query_params
     scenario_id = query.get("scenario_id")
@@ -627,7 +628,7 @@ async def afsim_job_socket(websocket: WebSocket, job_id: str) -> None:
     except WebSocketDisconnect:
         return
     except Exception as exc:
-        await websocket.send_json({"error": str(exc), "source": "afsim-realtime"})
+        await websocket.send_json({"error": str(exc), "source": "afsim-preview"})
 
 
 def main() -> None:

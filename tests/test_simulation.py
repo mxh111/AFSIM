@@ -45,11 +45,16 @@ def test_afsim_installation_is_discoverable():
 def test_afsim_map_resources_are_served_from_local_assets():
     manifest = map_resource_manifest()
     assert manifest["tile_scheme"] == "afsim_plate_carree"
+    assert manifest["readonly"] is True
+    assert manifest["tile_matrix"]["url_y_origin"] == "north"
     assert any(layer["id"] == "bluemarble" and layer["exists"] for layer in manifest["raster_layers"])
+    assert any(layer["id"] == "naturalearth" for layer in manifest["raster_layers"])
     assert any(layer["id"] == "coastline" and layer["exists"] for layer in manifest["vector_layers"])
+    assert any(item["id"] == "bluemarble" and item["url"] for item in manifest["offline_maps"])
 
     meta = raster_metadata("bluemarble")
     assert meta["profile"] == "afsim_plate_carree"
+    assert meta["tile_url_template"] == "/api/afsim/maps/bluemarble/{z}/{x}/{y}.png"
     assert meta["max_zoom"] >= 1
     body, media_type, _ = read_raster_tile("bluemarble", 1, 0, 0)
     assert media_type == "image/jpeg"
@@ -130,11 +135,16 @@ def test_afsim_workbench_state_contract_from_demo():
         "events",
         "layers",
         "simulation_time",
+        "map_resources",
+        "replay",
+        "capabilities",
     }
     assert required.issubset(workbench)
     assert workbench["schema_version"] == "afsim-workbench.v1"
     assert workbench["platforms"]
     assert len(workbench["layers"]) >= 30
+    assert workbench["map_resources"]["tile_scheme"] == "afsim_plate_carree"
+    assert {"events", "frames", "tracks", "bounds", "summary"}.issubset(workbench["replay"])
     assert workbench["stats"]["platform_count"] == len(workbench["platforms"])
     assert "map_pan_zoom" in workbench["capabilities"]
     assert "controlled_scene_patch" in workbench["capabilities"]
@@ -169,13 +179,17 @@ def test_afsim_event_output_builds_replay_frames(tmp_path):
     replay = build_run_replay(run, max_events=10, max_frames=10, cache_dir=tmp_path / "cache")
 
     assert replay["schema_version"] == "afsim-replay.v1"
+    assert {"run", "events", "frames", "tracks", "bounds", "source_files", "summary"}.issubset(replay)
     assert replay["summary"]["event_count"] >= 2
     assert replay["summary"]["frame_count"] >= 2
     assert replay["events"][0]["type"] == "detected"
     assert replay["events"][0]["detector_id"] == "radar_1"
     assert replay["events"][0]["target_id"] == "target_1"
     assert replay["frames"][0]["authoritative"] is True
+    assert {"frame_id", "source", "sim_time", "entity_count", "entities", "events"}.issubset(replay["frames"][0])
     assert any(entity["id"] == "target_1" for entity in replay["frames"][-1]["entities"])
+    assert replay["tracks"]
+    assert {"platform_id", "points", "history"}.issubset(replay["tracks"][0])
     assert replay["bounds"] is not None
 
 
@@ -321,6 +335,13 @@ def test_afsim_job_manager_runs_generated_scenario_and_binds_replay():
     assert job["status"] == "finished"
     assert job["run"]["returncode"] == 0
     assert job["replay_summary"]["run_id"] == job["run"]["run_id"]
+    replay = replay_for_run(job["run"]["run_id"])
+    assert replay["schema_version"] == "afsim-replay.v1"
+    assert {"run", "events", "frames", "tracks", "bounds", "source_files", "summary"}.issubset(replay)
+    assert replay["summary"]["run_id"] == job["run"]["run_id"]
+    assert isinstance(replay["frames"], list)
+    assert isinstance(replay["events"], list)
+    assert isinstance(replay["tracks"], list)
     events, _ = manager.events_since(job["job_id"], 0)
     assert any(event["phase"] == "running" for event in events)
     assert any(event["phase"] == "finished" for event in events)
