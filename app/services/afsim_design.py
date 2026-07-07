@@ -5,6 +5,7 @@ import math
 import re
 import shutil
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -410,13 +411,25 @@ def _safe_generated_dir(scenario_id: str) -> Path:
     return scenario_dir
 
 
+def _new_generated_dir(name: str) -> tuple[str, Path]:
+    GENERATED_ROOT.mkdir(parents=True, exist_ok=True)
+    safe_name = _safe_name(name)
+    for _ in range(20):
+        scenario_id = f"{int(time.time())}_{safe_name}_{uuid.uuid4().hex[:8]}"
+        scenario_dir = _safe_generated_dir(scenario_id)
+        try:
+            scenario_dir.mkdir(parents=True, exist_ok=False)
+            return scenario_id, scenario_dir
+        except FileExistsError:
+            continue
+    raise FileExistsError("failed to allocate unique generated scenario directory")
+
+
 def generate_scenario(design: AFSimScenarioDesign) -> dict[str, Any]:
     if not design.platforms:
         raise ValueError("scenario design must contain at least one platform")
-    scenario_id = f"{int(time.time())}_{_safe_name(design.name)}"
-    scenario_dir = GENERATED_ROOT / scenario_id
+    scenario_id, scenario_dir = _new_generated_dir(design.name)
     output_dir = scenario_dir / "output"
-    scenario_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(exist_ok=True)
 
     lines = [

@@ -20,6 +20,7 @@ from app.models import (
     SimulationControl,
 )
 from app.services.afsim_adapter import afsim_available, export_scenario_draft
+from app.services.afsim_aer_reader import aer_capabilities
 from app.services.afsim_design import (
     delete_generated_scenario,
     generate_scenario,
@@ -194,6 +195,13 @@ async def afsim_status(user: User = Depends(current_user)) -> dict[str, object]:
     return afsim_runner_status()
 
 
+@app.get("/api/afsim/aer/status")
+async def afsim_aer_status(user: User = Depends(current_user)) -> dict[str, object]:
+    if not user.can("read:state"):
+        raise HTTPException(status_code=403, detail="permission denied")
+    return aer_capabilities()
+
+
 @app.get("/api/afsim/maps")
 async def afsim_map_resources(user: User = Depends(current_user)) -> dict[str, object]:
     if not user.can("read:state"):
@@ -295,6 +303,18 @@ async def afsim_job(job_id: str, user: User = Depends(current_user)) -> dict[str
         return afsim_job_manager.get(job_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/afsim/jobs/{job_id}/cancel")
+async def afsim_cancel_job(job_id: str, user: User = Depends(current_user)) -> dict[str, object]:
+    if not user.can("control:sim"):
+        raise HTTPException(status_code=403, detail="permission denied")
+    try:
+        job = afsim_job_manager.cancel(job_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    storage.add_event("afsim.job.canceled", {"job_id": job_id, "status": job.get("status")})
+    return job
 
 
 @app.get("/api/afsim/jobs/{job_id}/replay")

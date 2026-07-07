@@ -9,10 +9,11 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from app.core.config import PROJECT_ROOT
+from app.services.afsim_aer_reader import inspect_aer_file
 
 
 REPLAY_CACHE_ROOT = PROJECT_ROOT / "runtime" / "workbench" / "replay_cache"
-REPLAY_PARSER_VERSION = 2
+REPLAY_PARSER_VERSION = 3
 
 EVENT_START_RE = re.compile(
     r"^\s*(?P<time>\d+(?:\.\d+)?)\s+(?P<kind>[A-Z][A-Z0-9_]+)\s*(?P<rest>.*)$"
@@ -225,7 +226,13 @@ def _parse_evt_record(lines: list[str], source: str, index: int) -> dict[str, An
     return {"event": event, "entities": entities}
 
 
-def _parse_evt_file(path: Path, *, max_records: int, max_bytes: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+def _parse_evt_file(
+    path: Path,
+    *,
+    max_records: int,
+    max_bytes: int,
+    include_observations: bool = True,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     events: list[dict[str, Any]] = []
     observations: list[dict[str, Any]] = []
     source = path.stem
@@ -235,7 +242,8 @@ def _parse_evt_file(path: Path, *, max_records: int, max_bytes: int) -> tuple[li
             continue
         event = parsed["event"]
         events.append(event)
-        observations.append({"time": event["time"], "event_id": event["id"], "entities": parsed["entities"], "event": event})
+        if include_observations:
+            observations.append({"time": event["time"], "event_id": event["id"], "entities": parsed["entities"], "event": event})
     meta = {
         "name": path.name,
         "path": str(path),
@@ -271,7 +279,7 @@ def _parse_log_lines(run: dict[str, Any], start_index: int = 1) -> list[dict[str
     return events
 
 
-def _parse_csv_file(path: Path, *, max_rows: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+def _parse_csv_file(path: Path, *, max_rows: int, include_observations: bool = True) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     events: list[dict[str, Any]] = []
     observations: list[dict[str, Any]] = []
     with path.open("r", encoding="utf-8", errors="ignore", newline="") as handle:
@@ -296,7 +304,7 @@ def _parse_csv_file(path: Path, *, max_rows: int) -> tuple[list[dict[str, Any]],
                 "layer_id": "replay.event_markers",
             }
             events.append(event)
-            if lat is not None and lon is not None:
+            if include_observations and lat is not None and lon is not None:
                 try:
                     entity = {
                         "id": entity_id,
@@ -359,7 +367,7 @@ def _heading_deg(start: dict[str, Any], end: dict[str, Any]) -> float:
 
 
 def _build_frames(observations: list[dict[str, Any]], *, max_frames: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, float] | None]:
-    if not observations:
+    if max_frames <= 0 or not observations:
         return [], [], None
     observations = sorted(observations, key=lambda item: float(item.get("time", 0.0)))
     start = float(observations[0]["time"])
@@ -431,6 +439,8 @@ def _file_metadata(file: dict[str, Any]) -> dict[str, Any] | None:
     path = Path(str(file.get("path", "")))
     if not path.exists():
         return None
+    if path.suffix.lower() == ".aer":
+        return inspect_aer_file(path)
     suffix = path.suffix.lower().lstrip(".") or "unknown"
     return {
         "name": path.name,
@@ -443,14 +453,27 @@ def _file_metadata(file: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def _cache_key(run: dict[str, Any]) -> dict[str, Any]:
+def _cache_limits(max_events: int, max_frames: int, max_records: int, max_bytes: int) -> dict[str, int]:
+    return {
+        "max_events": max(0, int(max_events)),
+        "max_frames": max(0, int(max_frames)),
+        "max_records": max(0, int(max_records)),
+        "max_bytes": max(0, int(max_bytes)),
+    }
+
+
+def _cache_limit_signature(limits: dict[str, int]) -> str:
+    return f"e{limits['max_events']}_f{limits['max_frames']}_r{limits['max_records']}_b{limits['max_bytes']}"
+
+
+def _cache_key(run: dict[str, Any], limits: dict[str, int]) -> dict[str, Any]:
     files = []
     for file in run.get("files", []):
         path = Path(str(file.get("path", "")))
         if path.exists():
             stat = path.stat()
             files.append({"path": str(path), "size": stat.st_size, "mtime": stat.st_mtime})
-    return {"parser_version": REPLAY_PARSER_VERSION, "run_id": run.get("run_id"), "files": files}
+    return {"parser_version": REPLAY_PARSER_VERSION, "run_id": run.get("run_id"), "files": files, "limits": limits}
 
 
 def build_run_replay(
@@ -462,11 +485,16 @@ def build_run_replay(
     max_bytes: int = 24_000_000,
     cache_dir: Path = REPLAY_CACHE_ROOT,
 ) -> dict[str, Any]:
+    limits = _cache_limits(max_events, max_frames, max_records, max_bytes)
+    max_events = limits["max_events"]
+    max_frames = limits["max_frames"]
+    max_records = limits["max_records"]
+    max_bytes = limits["max_bytes"]
     cache_dir.mkdir(parents=True, exist_ok=True)
     run_id = str(run.get("run_id") or "latest")
     safe_run_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", run_id)
-    cache_path = cache_dir / f"{safe_run_id}.json"
-    key = _cache_key(run)
+    cache_path = cache_dir / f"{safe_run_id}_{_cache_limit_signature(limits)}.json"
+    key = _cache_key(run, limits)
     cached = _read_json(cache_path, None)
     if isinstance(cached, dict) and cached.get("cache_key") == key:
         return cached["replay"]
@@ -474,18 +502,24 @@ def build_run_replay(
     events: list[dict[str, Any]] = []
     observations: list[dict[str, Any]] = []
     source_files: list[dict[str, Any]] = []
+    include_observations = max_frames > 0
     for file in run.get("files", []):
         path = Path(str(file.get("path", "")))
         if not path.exists():
             continue
         suffix = path.suffix.lower()
         if suffix == ".evt":
-            parsed_events, parsed_observations, meta = _parse_evt_file(path, max_records=max_records, max_bytes=max_bytes)
+            parsed_events, parsed_observations, meta = _parse_evt_file(
+                path,
+                max_records=max_records,
+                max_bytes=max_bytes,
+                include_observations=include_observations,
+            )
             events.extend(parsed_events)
             observations.extend(parsed_observations)
             source_files.append(meta)
         elif suffix == ".csv":
-            parsed_events, parsed_observations, meta = _parse_csv_file(path, max_rows=max_records)
+            parsed_events, parsed_observations, meta = _parse_csv_file(path, max_rows=max_records, include_observations=include_observations)
             events.extend(parsed_events)
             observations.extend(parsed_observations)
             source_files.append(meta)
@@ -529,13 +563,24 @@ def build_run_replay(
             "source": "runtime/afsim_runs",
             "timeline": {"start": 0.0, "end": timeline_end},
             "generated_at": time.time(),
+            "lightweight": max_frames <= 0,
+            "limits": limits,
         },
     }
     _write_json(cache_path, {"cache_key": key, "replay": replay})
     return replay
 
 
-def build_latest_replay(runs: list[dict[str, Any]]) -> dict[str, Any]:
+def build_latest_replay(
+    runs: list[dict[str, Any]],
+    *,
+    max_events: int = 700,
+    max_frames: int = 260,
+    max_records: int = 8000,
+    max_bytes: int = 24_000_000,
+    prefer_replay_frames: bool = True,
+    cache_dir: Path = REPLAY_CACHE_ROOT,
+) -> dict[str, Any]:
     if not runs:
         return {
             "schema_version": "afsim-replay.v1",
@@ -550,9 +595,34 @@ def build_latest_replay(runs: list[dict[str, Any]]) -> dict[str, Any]:
         }
 
     latest_run_id = runs[0].get("run_id")
+    if not prefer_replay_frames:
+        replay = dict(
+            build_run_replay(
+                runs[0],
+                max_events=max_events,
+                max_frames=max_frames,
+                max_records=max_records,
+                max_bytes=max_bytes,
+                cache_dir=cache_dir,
+            )
+        )
+        summary = dict(replay.get("summary") or {})
+        summary["latest_run_id"] = latest_run_id
+        summary["selected_run_index"] = 0
+        summary["selection_policy"] = "latest_run_lightweight" if max_frames <= 0 else "latest_run"
+        replay["summary"] = summary
+        return replay
+
     latest_replay: dict[str, Any] | None = None
     for index, run in enumerate(runs):
-        replay = build_run_replay(run)
+        replay = build_run_replay(
+            run,
+            max_events=max_events,
+            max_frames=max_frames,
+            max_records=max_records,
+            max_bytes=max_bytes,
+            cache_dir=cache_dir,
+        )
         if latest_replay is None:
             latest_replay = replay
         summary = replay.get("summary") if isinstance(replay.get("summary"), dict) else {}
@@ -566,7 +636,17 @@ def build_latest_replay(runs: list[dict[str, Any]]) -> dict[str, Any]:
             replay["summary"] = replay_summary
             return replay
 
-    replay = dict(latest_replay or build_run_replay(runs[0]))
+    replay = dict(
+        latest_replay
+        or build_run_replay(
+            runs[0],
+            max_events=max_events,
+            max_frames=max_frames,
+            max_records=max_records,
+            max_bytes=max_bytes,
+            cache_dir=cache_dir,
+        )
+    )
     summary = dict(replay.get("summary") or {})
     summary["latest_run_id"] = latest_run_id
     summary["selected_run_index"] = 0

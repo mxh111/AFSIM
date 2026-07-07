@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.config import PROJECT_ROOT
+from app.services.afsim_aer_reader import aer_capabilities
 from app.services.afsim_maps import map_resource_manifest
 from app.services.afsim_design import read_generated_scenario
 from app.services.afsim_parser import parse_demo_scenario, parse_scenario_file
@@ -845,7 +846,23 @@ def _events_from_run(run: dict[str, Any], limit: int = 180) -> list[dict[str, An
     return events
 
 
-def latest_replay() -> dict[str, Any]:
+def latest_replay(*, lightweight: bool = False) -> dict[str, Any]:
+    if lightweight:
+        replay = dict(
+            build_latest_replay(
+                list_runs(1),
+                max_events=80,
+                max_frames=0,
+                max_records=500,
+                max_bytes=2_000_000,
+                prefer_replay_frames=False,
+            )
+        )
+        summary = dict(replay.get("summary") or {})
+        summary["lightweight"] = True
+        summary["full_replay_endpoint"] = "/api/afsim/replay/latest"
+        replay["summary"] = summary
+        return replay
     return build_latest_replay(list_runs(100))
 
 
@@ -998,7 +1015,7 @@ def build_workbench_state(
     weapons = _weapons_from_platforms(platforms)
     detections = _detections(platforms, sensors)
     communications = _communications(platforms)
-    replay = latest_replay()
+    replay = latest_replay(lightweight=True)
     tracks.extend(replay.get("tracks", [])[:200])
     scene_events = _scene_events(platforms, detections)
     events = sorted(scene_events + replay["events"][:80], key=lambda item: float(item.get("time", 0.0)))
@@ -1064,6 +1081,7 @@ def build_workbench_state(
             "dynamic_2d_targets": 300,
             "query_modes": ["point_pick", "rectangle", "polygon_export_contract"],
         },
+        "aer_reader": aer_capabilities(),
         "capabilities": [
             "2d_map",
             "2_5d_map",

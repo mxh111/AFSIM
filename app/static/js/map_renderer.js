@@ -1,6 +1,8 @@
 const TILE_SIZE = 256;
 const rasterTileCache = new Map();
 const vectorLayerCache = new Map();
+const operationalMapInstances = new WeakMap();
+const MAX_VECTOR_LAYER_CACHE_ENTRIES = 32;
 
 export function sideColor(side) {
   if (side === "blue") return "#5aa7ff";
@@ -9,12 +11,44 @@ export function sideColor(side) {
   return "#c2c8ce";
 }
 
-export function disposeOperationalMap() {
-  // Canvas resources are released when the container is cleared.
+export function disposeOperationalMap(container = null) {
+  if (!container) return;
+  const instance = operationalMapInstances.get(container);
+  if (instance?.redrawFrame) cancelAnimationFrame(instance.redrawFrame);
+  if (instance?.viewChangeFrame) cancelAnimationFrame(instance.viewChangeFrame);
+  operationalMapInstances.delete(container);
+  container.innerHTML = "";
 }
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
+}
+
+function rounded(value, digits = 3) {
+  const factor = 10 ** digits;
+  return Math.round(Number(value) * factor) / factor;
+}
+
+function vectorBbox(view) {
+  if (!view) return null;
+  const latSpan = Number(view.max_lat) - Number(view.min_lat);
+  const lonSpan = Number(view.max_lon) - Number(view.min_lon);
+  if (!Number.isFinite(latSpan) || !Number.isFinite(lonSpan) || latSpan <= 0 || lonSpan <= 0) return null;
+  const padLat = latSpan * 0.2;
+  const padLon = lonSpan * 0.2;
+  const minLon = clamp(Number(view.min_lon) - padLon, -180, 180);
+  const maxLon = clamp(Number(view.max_lon) + padLon, -180, 180);
+  const minLat = clamp(Number(view.min_lat) - padLat, -90, 90);
+  const maxLat = clamp(Number(view.max_lat) + padLat, -90, 90);
+  return [minLon, minLat, maxLon, maxLat].map((value) => rounded(value, 3)).join(",");
+}
+
+function trimVectorCache() {
+  while (vectorLayerCache.size >= MAX_VECTOR_LAYER_CACHE_ENTRIES) {
+    const oldestKey = vectorLayerCache.keys().next().value;
+    if (!oldestKey) break;
+    vectorLayerCache.delete(oldestKey);
+  }
 }
 
 function layerMap(scene) {
@@ -34,10 +68,15 @@ function layerOpacity(layers, id, fallback = 1) {
 function setupCanvas(canvas) {
   const rect = canvas.getBoundingClientRect();
   const ratio = Math.min(window.devicePixelRatio || 1, 2);
-  canvas.width = Math.max(320, Math.floor(rect.width * ratio));
-  canvas.height = Math.max(260, Math.floor(rect.height * ratio));
+  const pixelWidth = Math.max(320, Math.floor(rect.width * ratio));
+  const pixelHeight = Math.max(260, Math.floor(rect.height * ratio));
+  if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+    canvas.width = pixelWidth;
+    canvas.height = pixelHeight;
+  }
   const ctx = canvas.getContext("2d");
   ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  ctx.clearRect(0, 0, canvas.width / ratio, canvas.height / ratio);
   return { ctx, width: canvas.width / ratio, height: canvas.height / ratio };
 }
 
@@ -289,6 +328,7 @@ function drawRaster(ctx, width, height, view, scene, redraw) {
 function loadVector(url, redraw) {
   let cached = vectorLayerCache.get(url);
   if (!cached) {
+    trimVectorCache();
     cached = { status: "loading", data: null, callbacks: new Set() };
     vectorLayerCache.set(url, cached);
     fetch(url)
@@ -311,12 +351,15 @@ function loadVector(url, redraw) {
   return cached;
 }
 
-function vectorUrl(scene, id, simplify) {
+function vectorUrl(scene, id, simplify, view) {
   const resource = vectorResource(scene, id);
   if (!resource?.exists) return null;
   const base = resource.geojson_url || `/api/afsim/maps/vectors/${resource.id}.geojson`;
   const join = base.includes("?") ? "&" : "?";
-  return `${base}${join}simplify=${encodeURIComponent(simplify)}`;
+  const params = [`simplify=${encodeURIComponent(simplify)}`];
+  const bbox = vectorBbox(view);
+  if (bbox) params.push(`bbox=${encodeURIComponent(bbox)}`);
+  return `${base}${join}${params.join("&")}`;
 }
 
 function drawGeoLine(ctx, project, coordinates) {
@@ -338,8 +381,8 @@ function drawGeoLine(ctx, project, coordinates) {
   }
 }
 
-function drawVectorLayer(ctx, project, scene, id, style, redraw) {
-  const url = vectorUrl(scene, id, style.simplify ?? 0.02);
+function drawVectorLayer(ctx, project, scene, id, style, view, redraw) {
+  const url = vectorUrl(scene, id, style.simplify ?? 0.02, view);
   if (!url) return;
   const layer = loadVector(url, redraw);
   if (layer.status !== "ready" || !layer.data?.features?.length) return;
@@ -584,8 +627,8 @@ function drawScene(ctx, width, height, view, scene, frame, options, redraw) {
       color: "#d6e6de",
       opacity: layerOpacity(layers, "base.coastline", 0.55),
       width: 0.9,
-      simplify: 0.015,
-    }, redraw);
+      simplify: 0.08,
+    }, view, redraw);
   }
   if (layerVisible(layers, "base.admin_boundaries")) {
     drawVectorLayer(ctx, project, scene, "pol", {
@@ -593,8 +636,8 @@ function drawScene(ctx, width, height, view, scene, frame, options, redraw) {
       opacity: layerOpacity(layers, "base.admin_boundaries", 0.42),
       width: 0.8,
       dash: [5, 4],
-      simplify: 0.03,
-    }, redraw);
+      simplify: 0.12,
+    }, view, redraw);
   }
 
   const entities = mergeFrameEntities(scene, frame);
@@ -652,10 +695,23 @@ function nearestEntity(drawResult, x, y, maxDistance = 28) {
   return nearest && best <= maxDistance ? nearest : null;
 }
 
-function attachEvents(canvas, drawResult) {
+function queueViewChange(canvas, instance, detail) {
+  instance.pendingViewState = detail;
+  if (instance.viewChangeFrame) return;
+  instance.viewChangeFrame = requestAnimationFrame(() => {
+    instance.viewChangeFrame = 0;
+    const nextView = instance.pendingViewState;
+    instance.pendingViewState = null;
+    if (nextView && canvas.isConnected) dispatch(canvas, "afsim-map-view-change", nextView);
+  });
+}
+
+function attachEvents(canvas, instance) {
   let dragStart = null;
   let moved = false;
-  const geoFromEvent = (event) => {
+  const currentDraw = () => instance.drawResult;
+  const geoFromEvent = (event, drawResult = currentDraw()) => {
+    if (!drawResult) return null;
     const rect = canvas.getBoundingClientRect();
     const x = event.clientX - rect.left;
     const y = event.clientY - rect.top;
@@ -664,7 +720,10 @@ function attachEvents(canvas, drawResult) {
 
   canvas.addEventListener("wheel", (event) => {
     event.preventDefault();
-    const { x, y, geo } = geoFromEvent(event);
+    const drawResult = currentDraw();
+    const point = geoFromEvent(event, drawResult);
+    if (!drawResult || !point) return;
+    const { x, y, geo } = point;
     const view = drawResult.view;
     const factor = event.deltaY > 0 ? 1.18 : 0.84;
     const nextLatSpan = clamp((view.max_lat - view.min_lat) * factor, 0.002, 180);
@@ -673,7 +732,7 @@ function attachEvents(canvas, drawResult) {
     const ry = y / Math.max(drawResult.height, 1);
     const minLon = geo.lon - rx * nextLonSpan;
     const maxLat = geo.lat + ry * nextLatSpan;
-    dispatch(canvas, "afsim-map-view-change", {
+    queueViewChange(canvas, instance, {
       centerLat: clamp(maxLat - nextLatSpan / 2, -89.999, 89.999),
       centerLon: clamp(minLon + nextLonSpan / 2, -179.999, 179.999),
       latSpan: nextLatSpan,
@@ -683,7 +742,10 @@ function attachEvents(canvas, drawResult) {
 
   canvas.addEventListener("mousedown", (event) => {
     if (event.button !== 0) return;
-    dragStart = { ...geoFromEvent(event), view: viewStateFromView(drawResult.view) };
+    const drawResult = currentDraw();
+    const point = geoFromEvent(event, drawResult);
+    if (!drawResult || !point) return;
+    dragStart = { ...point, view: viewStateFromView(drawResult.view) };
     moved = false;
     canvas.classList.add("dragging");
   });
@@ -691,6 +753,7 @@ function attachEvents(canvas, drawResult) {
   canvas.addEventListener("mousemove", (event) => {
     if (!dragStart) return;
     const point = geoFromEvent(event);
+    if (!point) return;
     moved = moved || Math.hypot(point.x - dragStart.x, point.y - dragStart.y) > 4;
   });
 
@@ -698,10 +761,15 @@ function attachEvents(canvas, drawResult) {
     if (!dragStart) return;
     canvas.classList.remove("dragging");
     const end = geoFromEvent(event);
+    const drawResult = currentDraw();
+    if (!end || !drawResult) {
+      dragStart = null;
+      return;
+    }
     if (moved) {
       const dx = end.x - dragStart.x;
       const dy = end.y - dragStart.y;
-      dispatch(canvas, "afsim-map-view-change", {
+      queueViewChange(canvas, instance, {
         centerLat: clamp(dragStart.view.centerLat + (dy / Math.max(drawResult.height, 1)) * dragStart.view.latSpan, -89.999, 89.999),
         centerLon: clamp(dragStart.view.centerLon - (dx / Math.max(drawResult.width, 1)) * dragStart.view.lonSpan, -179.999, 179.999),
         latSpan: dragStart.view.latSpan,
@@ -720,23 +788,64 @@ function attachEvents(canvas, drawResult) {
   });
 }
 
-export function renderOperationalMap(container, scene, options = {}) {
-  disposeOperationalMap();
-  if (!scene) {
-    container.innerHTML = `<div class="map-stage"><div class="empty-row">无可显示态势。</div></div>`;
-    return;
-  }
+function createMapCanvas(container) {
   container.innerHTML = `
     <div class="map-stage">
       <canvas class="afsim-map-canvas"></canvas>
     </div>
   `;
-  const canvas = container.querySelector("canvas");
+  return container.querySelector("canvas");
+}
+
+function ensureMapInstance(container) {
+  const existingCanvas = container.querySelector(".afsim-map-canvas");
+  const existing = operationalMapInstances.get(container);
+  if (existing && existing.canvas === existingCanvas) return existing;
+
+  const canvas = createMapCanvas(container);
+  const instance = {
+    canvas,
+    drawResult: null,
+    renderToken: 0,
+    redrawFrame: 0,
+    viewChangeFrame: 0,
+    pendingViewState: null,
+  };
+  operationalMapInstances.set(container, instance);
+  attachEvents(canvas, instance);
+  return instance;
+}
+
+function scheduleMapRedraw(container, scene, options, token) {
+  const instance = operationalMapInstances.get(container);
+  if (!instance || instance.renderToken !== token || instance.redrawFrame) return;
+  instance.redrawFrame = requestAnimationFrame(() => {
+    const latest = operationalMapInstances.get(container);
+    if (latest) latest.redrawFrame = 0;
+    if (!latest || latest.renderToken !== token || !latest.canvas.isConnected) return;
+    renderOperationalMap(container, scene, options);
+  });
+}
+
+export function renderOperationalMap(container, scene, options = {}) {
+  if (!scene) {
+    disposeOperationalMap(container);
+    container.innerHTML = `<div class="map-stage"><div class="empty-row">无可显示态势。</div></div>`;
+    return;
+  }
+  const instance = ensureMapInstance(container);
+  if (instance.redrawFrame) {
+    cancelAnimationFrame(instance.redrawFrame);
+    instance.redrawFrame = 0;
+  }
+  const canvas = instance.canvas;
   const { ctx, width, height } = setupCanvas(canvas);
   const frame = options.frame || null;
   const entities = mergeFrameEntities(scene, frame);
   const view = viewFromState(boundsFor(scene, entities), options.viewState);
-  const redraw = () => renderOperationalMap(container, scene, options);
+  const token = instance.renderToken + 1;
+  instance.renderToken = token;
+  const redraw = () => scheduleMapRedraw(container, scene, options, token);
   const drawResult = drawScene(ctx, width, height, view, scene, frame, options, redraw);
-  attachEvents(canvas, drawResult);
+  instance.drawResult = drawResult;
 }

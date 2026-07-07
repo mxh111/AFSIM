@@ -2,6 +2,7 @@ from pathlib import Path
 
 from app.models import CommanderCommand
 from app.models import AFSimDesignedPlatform, AFSimRoutePoint, AFSimScenarioDesign
+from app.services.afsim_aer_reader import aer_capabilities, inspect_aer_file
 from app.services.afsim_design import generate_scenario, read_generated_scenario
 from app.services.afsim_maps import map_resource_manifest, raster_metadata, read_raster_tile, vector_geojson
 from app.services.afsim_parser import parse_demo_scenario
@@ -145,6 +146,8 @@ def test_afsim_workbench_state_contract_from_demo():
     assert len(workbench["layers"]) >= 30
     assert workbench["map_resources"]["tile_scheme"] == "afsim_plate_carree"
     assert {"events", "frames", "tracks", "bounds", "summary"}.issubset(workbench["replay"])
+    assert workbench["replay"]["summary"].get("lightweight") is True
+    assert workbench["replay"]["frames"] == []
     assert workbench["stats"]["platform_count"] == len(workbench["platforms"])
     assert "map_pan_zoom" in workbench["capabilities"]
     assert "controlled_scene_patch" in workbench["capabilities"]
@@ -191,6 +194,42 @@ def test_afsim_event_output_builds_replay_frames(tmp_path):
     assert replay["tracks"]
     assert {"platform_id", "points", "history"}.issubset(replay["tracks"][0])
     assert replay["bounds"] is not None
+
+
+def test_lightweight_replay_cache_does_not_replace_full_replay(tmp_path):
+    evt_path = tmp_path / "cache_sample.evt"
+    evt_path.write_text(
+        "\n".join(
+            [
+                "0.00000 SENSOR_DETECTION_ATTEMPT radar_1 target_1 Sensor: radar_1 Mode: default Beam: 1 \\",
+                "  Rcvr: Type: TEST_RADAR LLA: 30:00:00.00n 120:00:00.00e 10 m Heading: 0 deg Pitch: 0 deg Roll: 0 deg Speed: 0 m/s \\",
+                "  Tgt: Type: TEST_TARGET LLA: 30:06:00.00n 120:06:00.00e 1000 m Heading: 45 deg Pitch: 0 deg Roll: 0 deg Speed: 250 m/s \\",
+                "  Pd: 0.9 RequiredPd: 0.5 Detected: 1",
+                "1.00000 SENSOR_DETECTION_ATTEMPT radar_1 target_1 Sensor: radar_1 Mode: default Beam: 1 \\",
+                "  Rcvr: Type: TEST_RADAR LLA: 30:00:00.00n 120:00:00.00e 10 m Heading: 0 deg Pitch: 0 deg Roll: 0 deg Speed: 0 m/s \\",
+                "  Tgt: Type: TEST_TARGET LLA: 30:07:00.00n 120:08:00.00e 1000 m Heading: 45 deg Pitch: 0 deg Roll: 0 deg Speed: 250 m/s \\",
+                "  Pd: 0.8 RequiredPd: 0.5 Detected: 1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    run = {
+        "run_id": "unit_replay_cache",
+        "files": [{"name": evt_path.name, "path": str(evt_path), "size": evt_path.stat().st_size}],
+        "summary": {"tail": ["start 0", "complete 1.0"]},
+    }
+    cache_dir = tmp_path / "cache"
+
+    light = build_run_replay(run, max_events=1, max_frames=0, cache_dir=cache_dir)
+    full = build_run_replay(run, max_events=10, max_frames=10, cache_dir=cache_dir)
+
+    assert light["frames"] == []
+    assert light["tracks"] == []
+    assert light["summary"]["lightweight"] is True
+    assert full["frames"]
+    assert full["tracks"]
+    assert full["summary"]["lightweight"] is False
+    assert len(list(cache_dir.glob("unit_replay_cache_*.json"))) == 2
 
 
 def test_latest_replay_prefers_recent_run_with_frames(tmp_path):
@@ -274,6 +313,58 @@ def test_generated_afsim_design_runs_with_mission():
     assert replay["schema_version"] == "afsim-replay.v1"
 
 
+def test_generated_scenario_ids_include_uuid_and_do_not_collide():
+    design = AFSimScenarioDesign(
+        name="pytest_collision_design",
+        end_time_seconds=10,
+        platforms=[
+            AFSimDesignedPlatform(
+                name="Blue_Unique",
+                side="blue",
+                category="fighter",
+                icon="F-22",
+                lat=1.0,
+                lon=1.0,
+                route=[AFSimRoutePoint(lat=1.0, lon=1.1)],
+            )
+        ],
+    )
+    first = generate_scenario(design)
+    second = generate_scenario(design)
+
+    assert first["scenario_id"] != second["scenario_id"]
+    assert first["scenario_id"].endswith(first["scenario_id"].split("_")[-1])
+    assert len(first["scenario_id"].split("_")[-1]) == 8
+    assert Path(first["scenario_dir"]).exists()
+    assert Path(second["scenario_dir"]).exists()
+
+
+def test_aer_reader_reports_extension_capability(tmp_path):
+    aer_path = tmp_path / "sample.aer"
+    aer_path.write_bytes(b"AER")
+
+    capabilities = aer_capabilities()
+    metadata = inspect_aer_file(aer_path)
+
+    assert capabilities["schema_version"] == "afsim-aer-reader.v1"
+    assert capabilities["status"] in {"available", "unsupported"}
+    assert "pymystic" in capabilities
+    assert metadata["status"] == "unsupported"
+    assert metadata["reader_status"] in {"available", "unsupported"}
+    assert metadata["parsed_records"] == 0
+
+
+def test_runtime_cleanup_script_exists_and_has_safe_defaults():
+    script = Path("scripts/cleanup_runtime.ps1")
+    text = script.read_text(encoding="utf-8")
+
+    assert script.exists()
+    assert "KeepRecent = 30" in text
+    assert "KeepDays = 7" in text
+    assert "Assert-InRuntime" in text
+    assert "Test-ManualKeep" in text
+
+
 def test_demo_run_uses_runtime_workdir_and_preserves_original_demo():
     run = run_demo("simple_scenario", "simple_scenario.txt", 30)
     afsim_root = afsim_paths().root.resolve()
@@ -345,3 +436,82 @@ def test_afsim_job_manager_runs_generated_scenario_and_binds_replay():
     events, _ = manager.events_since(job["job_id"], 0)
     assert any(event["phase"] == "running" for event in events)
     assert any(event["phase"] == "finished" for event in events)
+
+
+def test_afsim_job_manager_can_cancel_running_job(monkeypatch):
+    from app.services import afsim_jobs as jobs_module
+    from app.services.afsim_jobs import AFSimRunJobManager
+
+    class FakeProcess:
+        def __init__(self):
+            self.returncode = None
+            self.terminated = False
+            self.killed = False
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.terminated = True
+            self.returncode = -15
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            self.killed = True
+            self.returncode = -9
+
+    def fake_run_demo(demo_name, input_file, timeout_seconds, *, progress_callback=None, process_callback=None, cancel_event=None):
+        process = FakeProcess()
+        if process_callback:
+            process_callback(process)
+        if progress_callback:
+            progress_callback({"phase": "running", "tail": ["fake mission running"], "files": [], "run_dir": "fake"})
+        for _ in range(100):
+            if cancel_event and cancel_event.is_set():
+                break
+            import time
+
+            time.sleep(0.01)
+        return {
+            "run_id": "unit_canceled_run",
+            "source": "demo",
+            "input_file": input_file or "fake.txt",
+            "command": ["mission.exe", "fake.txt"],
+            "working_dir": "fake",
+            "run_dir": "fake",
+            "returncode": process.returncode,
+            "duration_seconds": 0.1,
+            "stdout": "partial stdout",
+            "stderr": "partial stderr",
+            "files": [],
+            "summary": {"tail": ["fake mission canceled"], "fatal": [], "warnings": []},
+            "timed_out": False,
+            "canceled": True,
+        }
+
+    monkeypatch.setattr(jobs_module, "run_demo", fake_run_demo)
+    manager = AFSimRunJobManager()
+    job = manager.submit_demo("fake_demo", "fake.txt", 30)
+    for _ in range(100):
+        job = manager.get(job["job_id"])
+        if job["status"] == "running":
+            break
+        import time
+
+        time.sleep(0.01)
+
+    canceled = manager.cancel(job["job_id"])
+    for _ in range(100):
+        canceled = manager.get(job["job_id"])
+        if canceled["status"] == "canceled":
+            break
+        import time
+
+        time.sleep(0.01)
+
+    assert canceled["status"] == "canceled"
+    assert canceled["run"]["canceled"] is True
+    events, _ = manager.events_since(job["job_id"], 0)
+    assert any(event["phase"] == "canceled" for event in events)

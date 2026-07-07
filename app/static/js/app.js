@@ -1,4 +1,8 @@
 import { disposeOperationalMap, renderOperationalMap, sideColor } from "./map_renderer.js";
+import { api, clamp, escapeHtml } from "./api.js";
+import { cancelJob, getJob, getJobReplay, jobWebSocketUrl, submitDemoJob, submitGeneratedJob } from "./jobs.js";
+import { replayEvents, replayFrameAt, replayFrames, timelineEnd as replayTimelineEnd } from "./replay.js";
+import { previewWebSocketUrl } from "./realtime.js";
 
 const MODE_LABELS = {
   design_preview: "设计预览",
@@ -33,6 +37,8 @@ const state = {
   playbackSpeed: 1,
 };
 
+let scheduledMapFrame = 0;
+
 const els = {
   systemStatus: document.getElementById("systemStatus"),
   currentScenario: document.getElementById("currentScenario"),
@@ -52,6 +58,7 @@ const els = {
   reloadWorkbenchBtn: document.getElementById("reloadWorkbenchBtn"),
   runDemoBtn: document.getElementById("runDemoBtn"),
   runGeneratedBtn: document.getElementById("runGeneratedBtn"),
+  cancelJobBtn: document.getElementById("cancelJobBtn"),
   refreshJobBtn: document.getElementById("refreshJobBtn"),
   previewStreamBtn: document.getElementById("previewStreamBtn"),
   playReplayBtn: document.getElementById("playReplayBtn"),
@@ -87,36 +94,9 @@ function assertElements() {
   if (missing.length) throw new Error(`页面缺少元素: ${missing.join(", ")}`);
 }
 
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
-
-async function api(path, options = {}) {
-  const response = await fetch(path, {
-    cache: "no-store",
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    ...options,
-  });
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`${response.status} ${response.statusText}: ${text.slice(0, 400)}`);
-  }
-  if (response.status === 204) return null;
-  return response.json();
-}
-
 function timeoutSeconds() {
   const value = Number(els.timeoutInput.value || 180);
   return Math.max(5, Math.min(1800, Math.round(Number.isFinite(value) ? value : 180)));
-}
-
-function clamp(value, min, max) {
-  return Math.max(min, Math.min(max, value));
 }
 
 function formatSeconds(value) {
@@ -132,23 +112,6 @@ function scenarioLabel() {
   if (source.kind === "generated") return `${source.name || source.scenario_id} (${source.input_file || "scenario"})`;
   if (source.kind === "demo") return `${source.demo_name || "demo"} / ${source.input_file || ""}`;
   return "未加载";
-}
-
-function replayFrames() {
-  const frames = state.workbench?.replay?.frames || [];
-  return Array.isArray(frames) ? frames : [];
-}
-
-function replayEvents() {
-  const events = state.workbench?.events || state.workbench?.replay?.events || [];
-  return Array.isArray(events) ? events : [];
-}
-
-function timelineEnd() {
-  const summaryEnd = Number(state.workbench?.replay?.summary?.timeline?.end || 0);
-  const simEnd = Number(state.workbench?.simulation_time?.end || 0);
-  const eventEnd = Math.max(0, ...replayEvents().map((event) => Number(event.time || 0)).filter(Number.isFinite));
-  return Math.max(1, summaryEnd, simEnd, eventEnd, 600);
 }
 
 function currentSimTime() {
@@ -190,8 +153,8 @@ function setCardState(id, kind) {
 function renderStatus() {
   const afsim = state.health?.afsim || {};
   const replay = state.workbench?.replay || {};
-  const frameCount = Number(replay.summary?.frame_count ?? replayFrames().length ?? 0);
-  const eventCount = replayEvents().length || Number(replay.summary?.event_count || 0);
+  const frameCount = Number(replay.summary?.frame_count ?? replayFrames(state.workbench).length ?? 0);
+  const eventCount = replayEvents(state.workbench).length || Number(replay.summary?.event_count || 0);
   const run = state.activeJob?.run || state.lastRun || replay.run || {};
   const runId = state.activeJobId || run.run_id || replay.summary?.run_id || "-";
   const returnCode = run.returncode ?? "-";
@@ -224,7 +187,7 @@ function renderStatus() {
 
 function renderHud() {
   const frame = state.currentFrame;
-  const eventCount = replayEvents().length;
+  const eventCount = replayEvents(state.workbench).length;
   els.hudSource.textContent = `source: ${frame?.source || MODE_LABELS[state.dataMode] || "none"}`;
   els.hudTime.textContent = `sim_time: ${currentSimTime().toFixed(1)}`;
   els.hudEntities.textContent = `entity_count: ${frame?.entity_count ?? targetEntities().length}`;
@@ -260,7 +223,7 @@ function normalizeEntity(entity, fallback = {}) {
 
 function renderMap() {
   if (!state.workbench) {
-    disposeOperationalMap();
+    disposeOperationalMap(els.sceneView);
     els.sceneView.innerHTML = `<div class="empty-row">等待 workbench 数据...</div>`;
     return;
   }
@@ -271,6 +234,14 @@ function renderMap() {
     viewState: state.mapView,
   });
   renderHud();
+}
+
+function scheduleMapRender() {
+  if (scheduledMapFrame) return;
+  scheduledMapFrame = requestAnimationFrame(() => {
+    scheduledMapFrame = 0;
+    renderMap();
+  });
 }
 
 function renderLayers() {
@@ -345,7 +316,7 @@ function renderTargetDetails(target) {
 }
 
 function renderEvents() {
-  const events = replayEvents().slice().sort((a, b) => Number(a.time || 0) - Number(b.time || 0));
+  const events = replayEvents(state.workbench).slice().sort((a, b) => Number(a.time || 0) - Number(b.time || 0));
   els.eventSummary.textContent = String(events.length);
   if (!events.length) {
     els.eventList.innerHTML = `<div class="empty-row">暂无 AFSIM 事件。</div>`;
@@ -383,7 +354,7 @@ function renderChains() {
 }
 
 function renderTimeline() {
-  const end = timelineEnd();
+  const end = replayTimelineEnd(state.workbench);
   const current = currentSimTime();
   els.timelineRange.max = String(end);
   els.timelineRange.value = String(clamp(current, 0, end));
@@ -393,7 +364,7 @@ function renderTimeline() {
 
 function renderNoFramesNotice() {
   const replay = state.workbench?.replay;
-  const frames = replayFrames();
+  const frames = replayFrames(state.workbench);
   if (state.dataMode !== "no_frames" || frames.length) {
     els.noFramesNotice.classList.add("hidden");
     els.noFramesNotice.textContent = "";
@@ -534,67 +505,10 @@ async function loadGeneratedWorkbench() {
   await loadWorkbench(new URLSearchParams({ scenario_id: scenarioId }));
 }
 
-function blendEntity(before, after, ratio) {
-  if (!before) return normalizeEntity(after);
-  if (!after) return normalizeEntity(before);
-  const lat = Number(before.lat) + (Number(after.lat) - Number(before.lat)) * ratio;
-  const lon = Number(before.lon) + (Number(after.lon) - Number(before.lon)) * ratio;
-  const alt = Number(before.alt_m || 0) + (Number(after.alt_m || 0) - Number(before.alt_m || 0)) * ratio;
-  return normalizeEntity({
-    ...before,
-    ...after,
-    lat,
-    lon,
-    alt_m: alt,
-    heading_deg: Math.abs(lat - Number(before.lat)) > 1e-8 || Math.abs(lon - Number(before.lon)) > 1e-8
-      ? bearingDeg(before, { lat, lon })
-      : Number(after.heading_deg ?? before.heading_deg ?? 0),
-  });
-}
-
-function bearingDeg(a, b) {
-  const lat1 = Number(a.lat) * Math.PI / 180;
-  const lat2 = Number(b.lat) * Math.PI / 180;
-  const dLon = (Number(b.lon) - Number(a.lon)) * Math.PI / 180;
-  const y = Math.sin(dLon) * Math.cos(lat2);
-  const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
-  return ((Math.atan2(y, x) * 180 / Math.PI) + 360) % 360;
-}
-
-function replayFrameAt(timeValue) {
-  const frames = replayFrames().slice().sort((a, b) => Number(a.sim_time || 0) - Number(b.sim_time || 0));
-  if (!frames.length) return null;
-  const time = Number(timeValue);
-  if (!Number.isFinite(time) || time <= Number(frames[0].sim_time || 0)) return frames[0];
-  const last = frames[frames.length - 1];
-  if (time >= Number(last.sim_time || 0)) return last;
-  for (let index = 1; index < frames.length; index += 1) {
-    const before = frames[index - 1];
-    const after = frames[index];
-    const t0 = Number(before.sim_time || 0);
-    const t1 = Number(after.sim_time || 0);
-    if (time < t0 || time > t1) continue;
-    const ratio = t1 > t0 ? (time - t0) / (t1 - t0) : 0;
-    const beforeById = new Map((before.entities || []).map((entity) => [entity.id, entity]));
-    const afterById = new Map((after.entities || []).map((entity) => [entity.id, entity]));
-    const ids = new Set([...beforeById.keys(), ...afterById.keys()]);
-    const entities = [...ids].map((id) => blendEntity(beforeById.get(id), afterById.get(id), ratio)).filter(Boolean);
-    return {
-      ...after,
-      source: `${after.source || "afsim-run-replay"}/interpolated`,
-      sim_time: time,
-      entity_count: entities.length,
-      entities,
-      events: [...new Set([...(before.events || []), ...(after.events || [])])].slice(-60),
-    };
-  }
-  return last;
-}
-
 function applyReplayTime(timeValue) {
   if (!state.workbench?.simulation_time) return false;
   state.workbench.simulation_time.current = Number(timeValue || 0);
-  const frame = replayFrameAt(timeValue);
+  const frame = replayFrameAt(state.workbench, timeValue, normalizeEntity);
   if (!frame) {
     state.currentFrame = null;
     if (state.dataMode !== "afsim_running") setDataMode("no_frames");
@@ -622,7 +536,7 @@ function applyReplay(replay, options = {}) {
   if (replay.bounds) state.workbench.bounds = replay.bounds;
   if (state.workbench.simulation_time) {
     state.workbench.simulation_time.current = 0;
-    state.workbench.simulation_time.end = timelineEnd();
+    state.workbench.simulation_time.end = replayTimelineEnd(state.workbench);
   }
   const frames = replay.frames || [];
   if (frames.length) {
@@ -668,6 +582,9 @@ function updateJobState(job, event = null) {
     setDataMode("no_frames");
     state.diagnostics.push(job.error || event?.error || "AFSIM job failed");
   }
+  if (job.status === "canceled") {
+    setDataMode("no_frames");
+  }
   const progressLines = summarizeProgress(job, event);
   if (progressLines.length && !tail.length) state.logLines = progressLines;
   renderAll();
@@ -676,7 +593,7 @@ function updateJobState(job, event = null) {
 async function loadJobReplay(jobId) {
   if (!jobId || state.replayLoadedForJob === jobId) return;
   try {
-    const replay = await api(`/api/afsim/jobs/${encodeURIComponent(jobId)}/replay`);
+    const replay = await getJobReplay(jobId);
     state.replayLoadedForJob = jobId;
     applyReplay(replay, { strict: true });
   } catch (error) {
@@ -696,14 +613,14 @@ function startJobPolling(jobId) {
   if (state.pollTimer) clearInterval(state.pollTimer);
   state.pollTimer = setInterval(async () => {
     try {
-      const job = await api(`/api/afsim/jobs/${encodeURIComponent(jobId)}`);
+      const job = await getJob(jobId);
       updateJobState(job);
       if (job.status === "finished") {
         clearInterval(state.pollTimer);
         state.pollTimer = null;
         await loadJobReplay(jobId);
       }
-      if (job.status === "failed") {
+      if (job.status === "failed" || job.status === "canceled") {
         clearInterval(state.pollTimer);
         state.pollTimer = null;
       }
@@ -720,8 +637,7 @@ function watchJob(job) {
   state.activeJob = job;
   state.replayLoadedForJob = null;
   updateJobState(job);
-  const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-  const socket = new WebSocket(`${protocol}://${window.location.host}/ws/afsim/jobs/${encodeURIComponent(job.job_id)}`);
+  const socket = new WebSocket(jobWebSocketUrl(job.job_id));
   state.jobSocket = socket;
   startJobPolling(job.job_id);
 
@@ -735,6 +651,7 @@ function watchJob(job) {
     updateJobState(payload.job || state.activeJob, payload.event || null);
     const currentJob = payload.job || state.activeJob;
     if (currentJob?.status === "finished") await loadJobReplay(currentJob.job_id);
+    if (currentJob?.status === "canceled") stopJobWatch();
   });
   socket.addEventListener("error", () => {
     state.diagnostics.push("AFSIM job WebSocket 连接失败，已保留轮询刷新。");
@@ -758,13 +675,10 @@ async function runDemo() {
   state.logLines = ["提交 AFSIM Demo 作业..."];
   state.diagnostics = [];
   renderAll();
-  const job = await api("/api/afsim/run/jobs", {
-    method: "POST",
-    body: JSON.stringify({
-      demo_name: option.value,
-      input_file: option.dataset.input || null,
-      timeout_seconds: timeoutSeconds(),
-    }),
+  const job = await submitDemoJob({
+    demoName: option.value,
+    inputFile: option.dataset.input || null,
+    timeoutSeconds: timeoutSeconds(),
   });
   watchJob(job);
 }
@@ -785,10 +699,7 @@ async function runGenerated() {
   state.logLines = [`提交生成场景作业: ${scenarioId}`];
   state.diagnostics = [];
   renderAll();
-  const job = await api(`/api/afsim/designs/${encodeURIComponent(scenarioId)}/run/jobs`, {
-    method: "POST",
-    body: JSON.stringify({ timeout_seconds: timeoutSeconds() }),
-  });
+  const job = await submitGeneratedJob({ scenarioId, timeoutSeconds: timeoutSeconds() });
   watchJob(job);
 }
 
@@ -806,8 +717,7 @@ function startPreviewStream() {
   const params = sourceParams();
   params.set("interval_seconds", "0.75");
   params.set("loop_seconds", "120");
-  const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-  const socket = new WebSocket(`${protocol}://${window.location.host}/ws/afsim/preview?${params.toString()}`);
+  const socket = new WebSocket(previewWebSocketUrl(params));
   state.previewSocket = socket;
   els.previewStreamBtn.classList.add("active");
   els.previewStreamBtn.textContent = "停止设计预览流";
@@ -842,8 +752,14 @@ function stopReplayPlayback() {
 }
 
 function playReplay() {
-  const frames = replayFrames();
+  const frames = replayFrames(state.workbench);
   if (!frames.length) {
+    if (state.workbench?.replay?.summary?.lightweight) {
+      state.diagnostics.push("Initial workbench loaded a lightweight replay index. Click load latest replay to fetch full frames.");
+      setDataMode("design_preview");
+      renderAll();
+      return;
+    }
     state.diagnostics.push("没有 AFSIM replay frames，不能播放。");
     setDataMode("no_frames");
     renderAll();
@@ -858,7 +774,7 @@ function playReplay() {
   els.playReplayBtn.textContent = "暂停 AFSIM 复盘";
   setDataMode("replay");
   state.replayTimer = setInterval(() => {
-    const end = timelineEnd();
+    const end = replayTimelineEnd(state.workbench);
     const next = currentSimTime() + state.playbackSpeed;
     applyReplayTime(next > end ? 0 : next);
   }, 500);
@@ -866,7 +782,7 @@ function playReplay() {
 
 async function refreshReplay() {
   if (state.activeJobId) {
-    const job = await api(`/api/afsim/jobs/${encodeURIComponent(state.activeJobId)}`);
+    const job = await getJob(state.activeJobId);
     updateJobState(job);
     if (job.status === "finished") await loadJobReplay(job.job_id);
     return;
@@ -878,6 +794,16 @@ async function refreshReplay() {
 async function loadLatestReplay() {
   const replay = await api("/api/afsim/replay/latest");
   applyReplay(replay, { strict: false });
+}
+
+async function cancelCurrentJob() {
+  if (!state.activeJobId) {
+    state.diagnostics.push("没有可取消的 AFSIM job。");
+    renderDiagnostics();
+    return;
+  }
+  const job = await cancelJob(state.activeJobId);
+  updateJobState(job);
 }
 
 function stopPlaybackAndPreview() {
@@ -895,6 +821,7 @@ function bindEvents() {
   });
   els.runDemoBtn.addEventListener("click", () => runDemo().catch(showError));
   els.runGeneratedBtn.addEventListener("click", () => runGenerated().catch(showError));
+  els.cancelJobBtn.addEventListener("click", () => cancelCurrentJob().catch(showError));
   els.refreshJobBtn.addEventListener("click", () => refreshReplay().catch(showError));
   els.refreshReplayBtn.addEventListener("click", () => loadLatestReplay().catch(showError));
   els.previewStreamBtn.addEventListener("click", togglePreviewStream);
@@ -926,7 +853,7 @@ function bindEvents() {
   els.eventList.addEventListener("click", (event) => {
     const row = event.target.closest("[data-event-index]");
     if (!row) return;
-    const eventData = replayEvents().slice().sort((a, b) => Number(a.time || 0) - Number(b.time || 0))[Number(row.dataset.eventIndex)];
+    const eventData = replayEvents(state.workbench).slice().sort((a, b) => Number(a.time || 0) - Number(b.time || 0))[Number(row.dataset.eventIndex)];
     if (!eventData) return;
     state.selectedEventId = eventData.id;
     state.selectedId = eventData.platform_id || eventData.target_id || eventData.detector_id || state.selectedId;
@@ -939,7 +866,7 @@ function bindEvents() {
   });
   els.sceneView.addEventListener("afsim-map-view-change", (event) => {
     state.mapView = event.detail;
-    renderMap();
+    scheduleMapRender();
   });
 }
 

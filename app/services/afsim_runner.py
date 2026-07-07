@@ -4,6 +4,7 @@ import json
 import re
 import shutil
 import subprocess
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -194,6 +195,8 @@ def _run_input(
     timeout_seconds: int,
     metadata: dict[str, Any] | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    process_callback: Callable[[subprocess.Popen[str]], None] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     paths = afsim_paths()
     if not paths.mission_exe.exists():
@@ -223,6 +226,7 @@ def _run_input(
             }
         )
     timed_out = False
+    canceled = False
     with stdout_path.open("w", encoding="utf-8", errors="ignore") as stdout_handle, stderr_path.open("w", encoding="utf-8", errors="ignore") as stderr_handle:
         proc = subprocess.Popen(
             command,
@@ -233,8 +237,18 @@ def _run_input(
             encoding="utf-8",
             errors="ignore",
         )
+        if process_callback:
+            process_callback(proc)
         while proc.poll() is None:
             elapsed = time.time() - started_at
+            if cancel_event and cancel_event.is_set():
+                canceled = True
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                break
             if elapsed > timeout_seconds:
                 timed_out = True
                 proc.kill()
@@ -250,6 +264,8 @@ def _run_input(
     stderr = _tail_text(stderr_path)
     if timed_out:
         stderr = (stderr + f"\nTIMEOUT: mission.exe exceeded {timeout_seconds}s and was killed.").strip()
+    if canceled:
+        stderr = (stderr + "\nCANCELED: mission.exe was canceled by AFSIM_LLM.").strip()
     files = _copy_outputs(output_dir, run_dir, started_at)
     for aux in [stdout_path, stderr_path]:
         if aux.exists() and aux.stat().st_size:
@@ -277,13 +293,21 @@ def _run_input(
         "files": files,
         "summary": _summarize_log(files, stdout, stderr),
         "timed_out": timed_out,
+        "canceled": canceled,
     }
     if metadata:
         result.update(metadata)
     (run_dir / "run.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     if progress_callback:
         snapshot = _output_snapshot(output_dir, run_dir, started_at, stdout_path, stderr_path)
-        snapshot.update({"phase": "finished", "command": command, "working_dir": str(working_dir), "returncode": proc.returncode})
+        snapshot.update(
+            {
+                "phase": "canceled" if canceled else "finished",
+                "command": command,
+                "working_dir": str(working_dir),
+                "returncode": proc.returncode,
+            }
+        )
         progress_callback(snapshot)
     return result
 
@@ -337,6 +361,8 @@ def run_demo(
     timeout_seconds: int = 120,
     *,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    process_callback: Callable[[subprocess.Popen[str]], None] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     paths = afsim_paths()
     demo_dir = _safe_child(paths.demos_dir, demo_name)
@@ -365,6 +391,8 @@ def run_demo(
         timeout_seconds=timeout_seconds,
         metadata={"demo_name": demo_name, "original_demo_dir": str(demo_dir)},
         progress_callback=progress_callback,
+        process_callback=process_callback,
+        cancel_event=cancel_event,
     )
 
 
@@ -373,6 +401,8 @@ def run_generated_scenario(
     timeout_seconds: int = 120,
     *,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    process_callback: Callable[[subprocess.Popen[str]], None] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     input_path = generated_input_path(scenario_id)
     run_id = f"{int(time.time())}_generated_{scenario_id}_{uuid.uuid4().hex[:8]}"
@@ -384,6 +414,8 @@ def run_generated_scenario(
         timeout_seconds=timeout_seconds,
         metadata={"scenario_id": scenario_id, "demo_name": f"generated:{scenario_id}"},
         progress_callback=progress_callback,
+        process_callback=process_callback,
+        cancel_event=cancel_event,
     )
 
 
