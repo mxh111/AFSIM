@@ -9,6 +9,7 @@ from app.services.afsim_realtime import build_realtime_frame
 from app.services.afsim_replay import build_latest_replay, build_run_replay
 from app.services.afsim_runner import discover_demos, run_generated_scenario, status
 from app.services.afsim_workbench import build_workbench_state, default_layer_catalog
+from app.services.afsim_workbench import replay_for_run
 from app.services.simulation import SimulationEngine
 from app.services.storage import Storage
 
@@ -229,3 +230,6 @@ def test_generated_afsim_design_runs_with_mission():
     assert len(parsed["geojson"]["features"]) >= 4
     assert run["returncode"] == 0
     assert any(file["name"].endswith(".aer") for file in run["files"])
+    replay = replay_for_run(run["run_id"])
+    assert replay["summary"]["run_id"] == run["run_id"]
+    assert replay["schema_version"] == "afsim-replay.v1"

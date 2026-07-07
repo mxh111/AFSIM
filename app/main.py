@@ -365,10 +365,11 @@ async def afsim_run_design(
         raise HTTPException(status_code=403, detail="permission denied")
     try:
         result = run_generated_scenario(scenario_id, payload.timeout_seconds)
+        replay = replay_for_run(str(result["run_id"]))
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     storage.add_event("afsim.generated.run", result)
-    return result
+    return {"run": result, "replay": replay}
 
 
 @app.post("/api/agent/tick")
@@ -401,8 +402,9 @@ async def afsim_run(payload: AFSimRunRequest, user: User = Depends(current_user)
     if not user.can("control:sim"):
         raise HTTPException(status_code=403, detail="permission denied")
     result = run_demo(payload.demo_name, payload.input_file, payload.timeout_seconds)
+    replay = replay_for_run(str(result["run_id"]))
     storage.add_event("afsim.run", result)
-    return result
+    return {"run": result, "replay": replay}
 
 
 @app.post("/api/afsim/analyze")

@@ -72,6 +72,24 @@ include 解析会同时尝试当前文件目录和想定根目录，覆盖 warga
 
 复盘数据结构包含 `events/frames/tracks/bounds/semantic_events/summary`。事件列表点击会跳转到对应时间并高亮相关目标。
 
+## 网页调用 AFSIM 链路
+
+网页“运行当前 Demo”和“运行生成场景”调用后端：
+
+- `POST /api/afsim/run`
+- `POST /api/afsim/designs/{scenario_id}/run`
+
+后端同步执行本机 `mission.exe`，把本次 `.log/.evt/.aer` 复制到 `runtime/afsim_runs/<run_id>/`，并立即返回：
+
+```json
+{
+  "run": { "run_id": "...", "returncode": 0, "files": [] },
+  "replay": { "schema_version": "afsim-replay.v1", "summary": { "run_id": "..." } }
+}
+```
+
+前端优先使用返回的 `replay` 驱动地图、时间轴和事件列表；如果需要手动刷新指定运行，调用 `/api/afsim/replay/{run_id}`。这条链路不再依赖“最近一次运行”推断，避免多个运行交错时显示错复盘。
+
 ## 性能和验证约束
 
 `/api/afsim/workbench` 返回 `performance_design`，当前设计目标为 5Hz 刷新、200 个三维动态目标、300 个二维动态目标。前端渲染层保持 Canvas/Three.js 单次重绘，不在拖拽过程中写入原始 AFSIM 目录。

@@ -928,9 +928,7 @@ async function runGeneratedScenario() {
     method: "POST",
     body: JSON.stringify({ timeout_seconds: 180 }),
   });
-  state.lastRunId = run.run_id;
-  els.eventLog.textContent = summarizeRun(run);
-  await refreshReplay();
+  await handleRunResponse(run, `生成场景 ${scenarioId}`);
 }
 
 async function runDemo() {
@@ -941,9 +939,22 @@ async function runDemo() {
     method: "POST",
     body: JSON.stringify({ demo_name: selected.value, input_file: selected.dataset.input, timeout_seconds: 180 }),
   });
+  await handleRunResponse(run, `Demo ${selected.value}`);
+}
+
+async function handleRunResponse(payload, label) {
+  const run = payload?.run || payload;
+  const replay = payload?.replay || null;
   state.lastRunId = run.run_id;
-  els.eventLog.textContent = summarizeRun(run);
-  await refreshReplay();
+  const summary = summarizeRun(run);
+  if (replay) {
+    applyReplayToWorkbench(replay, { strictRunId: run.run_id });
+    const frameCount = replay.summary?.frame_count || 0;
+    els.eventLog.textContent = `${summary}\n\n已绑定本次运行复盘：${run.run_id}，事件 ${replay.summary?.event_count || 0}，帧 ${frameCount}。${frameCount ? "" : "\n本次运行未产生坐标帧，地图保持解析态势；可查看事件和输出文件。"}`;
+  } else {
+    els.eventLog.textContent = `${summary}\n\n本次运行未返回 replay，正在按 run_id 查询复盘...`;
+    await refreshReplay(run.run_id);
+  }
 }
 
 function summarizeRun(run) {
@@ -993,10 +1004,12 @@ async function restoreDraft(draftId) {
   els.eventLog.textContent = `已回退到草稿：${result.current_path}`;
 }
 
-async function refreshReplay() {
-  const replay = await api("/api/afsim/replay/latest");
+function applyReplayToWorkbench(replay, options = {}) {
   if (state.workbench) {
     state.workbench.replay = replay;
+    if (replay.summary?.run_id) {
+      els.activeScenarioLabel.textContent = `${state.workbench.source?.kind || "-"} | ${state.workbench.source?.input_file || state.workbench.source?.path || "-"} | replay ${replay.summary.run_id}`;
+    }
     state.workbench.tracks = [
       ...(state.workbench.tracks || []).filter((track) => !String(track.id || "").startsWith("replay_trk_")),
       ...(replay.tracks || []),
@@ -1012,11 +1025,20 @@ async function refreshReplay() {
     if (replay.frames?.length) {
       state.currentFrame = replay.frames[0];
       state.selectedId = replay.frames[0].entities?.[0]?.id || state.selectedId;
+    } else if (options.strictRunId) {
+      state.currentFrame = null;
     }
     renderTargets();
     renderEvents();
     renderTimeline();
     renderMap();
+  }
+}
+
+async function refreshReplay(runId = null) {
+  const replay = await api(runId ? `/api/afsim/replay/${encodeURIComponent(runId)}` : "/api/afsim/replay/latest");
+  if (state.workbench) {
+    applyReplayToWorkbench(replay, { strictRunId: runId });
     els.eventLog.textContent = `已加载复盘：${replay.summary?.run_id || "-"}，事件 ${replay.summary?.event_count || 0}，帧 ${replay.summary?.frame_count || 0}`;
   }
 }
