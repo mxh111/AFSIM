@@ -37,12 +37,7 @@ SYSTEM_PROMPT = """你是 AFSIM_LLM 的封闭仿真指挥 Agent。
   ]
 }
 
-约束：
-1. 只能做仿真态势管理、传感器管理、机动航迹调整、目标分配、标注和复盘建议。
-2. 不输出真实世界作战命令，不输出武器释放、杀伤、规避拦截或现实伤害性步骤。
-3. 指令必须引用当前态势中存在的 unit_id；不确定时输出 annotate 或 no_op。
-4. 优先保持传感器覆盖连续性、提高态势感知、降低不确定性。
-5. 每轮最多输出 6 条命令，避免频繁大幅调整。"""
+"""
 
 
 AFSIM_ANALYSIS_PROMPT = """你是 AFSIM_LLM 的仿真工程分析 Agent。
@@ -56,7 +51,7 @@ AFSIM_ANALYSIS_PROMPT = """你是 AFSIM_LLM 的仿真工程分析 Agent。
   "risk_level": "low|medium|high"
 }
 
-不要提供真实世界作战、武器使用或伤害性建议。"""
+"""
 
 
 def _extract_json(text: str) -> dict[str, Any]:
@@ -150,7 +145,7 @@ class CommanderLLM:
             except ValidationError:
                 continue
         return commands or [CommanderCommand(action="no_op", reason="未得到可执行的白名单仿真命令")]
-
+    
     def _local_rule(self, request: CommanderRequest, state: StateSnapshot) -> CommanderResponse:
         own_units = [unit for unit in state.units if unit.side == request.side]
         radar_units = [unit for unit in own_units if unit.sensors and any(s.type in {"radar", "esm"} for s in unit.sensors)]
