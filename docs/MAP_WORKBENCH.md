@@ -11,15 +11,25 @@ cd D:\AFISM\AFSIM\AFSIM_LLM
 
 ## 地图资源配置
 
-工作台通过 `/api/afsim/workbench` 返回 `map_resources`，只读引用本机 AFSIM 资源：
+工作台通过 `/api/afsim/workbench` 返回 `map_resources`，只读引用并服务化本机 AFSIM 资源：
 
-- `resources/maps/bluemarble_db/bmng.mbtiles`：Blue Marble 离线影像线索。
-- `resources/maps/naturalearth_db/natural.mbtiles`：Natural Earth 离线底图线索。
-- `resources/maps/political_db/border.mbtiles`：政治边界线索。
-- `resources/maps/layers/ne_50m_coastline.shp`：海岸线线索。
+- `resources/maps/bluemarble_db/bmng.mbtiles`：Blue Marble 离线影像瓦片。
+- `resources/maps/naturalearth_db/natural.mbtiles`：Natural Earth 离线底图瓦片。
+- `resources/maps/political_db/border.mbtiles`：政治边界瓦片。
+- `resources/maps/layers/ne_50m_coastline.shp`：海岸线矢量层。
+- `resources/maps/layers/pol.shp`：AFSIM geocentric/ECEF 政治边界矢量层。
+- `resources/maps/layers/us.shp`：美国边界矢量层。
 - `resources/models/milStdIconMappings.csv` 和 `resources/models/3d`：符号和模型来源线索。
 
-当前浏览器端不直接读取大型 MBTiles/OSGB 文件，而是用本地程序化深色底图、地貌纹理、等高线、水系、道路、城市点和 Three.js 简化模型复刻 Warlock 风格。后续可在 `app/static/assets/` 放入转换后的轻量瓦片、GeoJSON、glTF 或 sprites。
+后端新增地图服务接口，浏览器不直接读取 AFSIM 安装目录：
+
+- `GET /api/afsim/maps`：返回 raster/vector 图层清单、Plate Carrée 瓦片矩阵和 3D 贴图 URL。
+- `GET /api/afsim/maps/bluemarble/{z}/{x}/{y}.png`：读取 `bmng.mbtiles` 原始瓦片；URL 的 `y` 为北向原点，后端转换为 MBTiles/TMS `tile_row`。
+- `GET /api/afsim/maps/{map_id}/metadata`：返回 MBTiles metadata 和 osgEarth profile。
+- `GET /api/afsim/maps/{map_id}/texture.jpg?z=3`：把 AFSIM 瓦片拼成 Three.js 地球用 Plate Carrée 贴图，缓存到 `runtime/map_cache/`。
+- `GET /api/afsim/maps/vectors/{layer}.geojson`：把 `coastline/pol/us` Shapefile 转成 GeoJSON，可用 `simplify` 和 `bbox` 参数裁剪/简化。
+
+前端 2D Canvas 先绘制 AFSIM Blue Marble MBTiles 瓦片，再按图层叠加 coastline/pol/us GeoJSON、平台、航迹、雷达圈、通信链路、探测关系和事件标记。3D 地球使用同一套 Blue Marble 瓦片合成贴图，旧的程序化地貌、水系、道路、假海岸线底图已停用。
 
 ## AFSIM 字段映射
 
@@ -74,12 +84,24 @@ include 解析会同时尝试当前文件目录和想定根目录，覆盖 warga
 
 ## 网页调用 AFSIM 链路
 
-网页“运行当前 Demo”和“运行生成场景”调用后端：
+网页“运行当前 Demo”和“运行生成场景”优先调用后端作业接口：
+
+- `POST /api/afsim/run/jobs`
+- `POST /api/afsim/designs/{scenario_id}/run/jobs`
+- `GET /api/afsim/jobs/{job_id}`
+- `GET /api/afsim/jobs/{job_id}/replay`
+- `WS /ws/afsim/jobs/{job_id}`
+
+后端把本机 `mission.exe` 放入后台线程执行，并通过 WebSocket 推送 `queued/starting/running/finished/failed`、运行目录、输出文件列表和日志尾部。官方 demo 会先复制到 `runtime/afsim_workdirs/<run_id>/`，包括入口文件声明的 sibling `file_path` 依赖，例如 `../base_types`；原始 AFSIM 安装目录只读使用，不写入官方 demo 的 `output/`。
+
+完成后，后端把本次 `.log/.evt/.aer/.csv` 与 `mission.stdout.log` 归档到 `runtime/afsim_runs/<run_id>/`，并按同一个 `run_id` 构造 replay。前端收到作业完成事件后调用 `/api/afsim/jobs/{job_id}/replay`，再驱动地图、时间轴、事件列表、航迹和链路视图。
+
+同步兼容接口仍保留：
 
 - `POST /api/afsim/run`
 - `POST /api/afsim/designs/{scenario_id}/run`
 
-后端同步执行本机 `mission.exe`，把本次 `.log/.evt/.aer` 复制到 `runtime/afsim_runs/<run_id>/`，并立即返回：
+同步接口执行本机 `mission.exe`，把本次输出复制到 `runtime/afsim_runs/<run_id>/`，并立即返回：
 
 ```json
 {

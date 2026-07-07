@@ -70,6 +70,12 @@ if ($Reload) {
 if (Test-Path -LiteralPath $stdoutLog) { Remove-Item -LiteralPath $stdoutLog -Force }
 if (Test-Path -LiteralPath $stderrLog) { Remove-Item -LiteralPath $stderrLog -Force }
 
+$pathValue = $env:Path
+if ($pathValue) {
+  [Environment]::SetEnvironmentVariable("PATH", $null, "Process")
+  [Environment]::SetEnvironmentVariable("Path", $pathValue, "Process")
+}
+
 $process = Start-Process `
   -FilePath $pythonExe `
   -ArgumentList $uvicornArgs `

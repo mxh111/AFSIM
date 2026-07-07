@@ -4,7 +4,7 @@ import asyncio
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from app.core.config import PROJECT_ROOT, settings
@@ -27,6 +27,15 @@ from app.services.afsim_design import (
     platform_templates,
     read_generated_scenario,
     scene_overview,
+)
+from app.services.afsim_jobs import afsim_job_manager, stream_job_events
+from app.services.afsim_maps import (
+    compose_raster_texture,
+    map_resource_manifest,
+    parse_bbox,
+    raster_metadata,
+    read_raster_tile,
+    vector_geojson,
 )
 from app.services.afsim_parser import parse_demo_scenario, parse_scenario_file
 from app.services.afsim_realtime import build_realtime_frame
@@ -185,6 +194,78 @@ async def afsim_status(user: User = Depends(current_user)) -> dict[str, object]:
     return afsim_runner_status()
 
 
+@app.get("/api/afsim/maps")
+async def afsim_map_resources(user: User = Depends(current_user)) -> dict[str, object]:
+    if not user.can("read:state"):
+        raise HTTPException(status_code=403, detail="permission denied")
+    return map_resource_manifest()
+
+
+@app.get("/api/afsim/maps/vectors/{layer_name}")
+async def afsim_vector_layer(
+    layer_name: str,
+    bbox: str | None = None,
+    simplify: float = 0.02,
+    user: User = Depends(current_user),
+) -> JSONResponse:
+    if not user.can("read:state"):
+        raise HTTPException(status_code=403, detail="permission denied")
+    layer_id = layer_name[:-8] if layer_name.endswith(".geojson") else layer_name
+    try:
+        payload = vector_geojson(layer_id, bbox=parse_bbox(bbox), simplify=max(0.0, min(float(simplify), 2.0)))
+    except (FileNotFoundError, KeyError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return JSONResponse(content=payload, media_type="application/geo+json")
+
+
+@app.get("/api/afsim/maps/{map_id}/metadata")
+async def afsim_map_metadata(map_id: str, user: User = Depends(current_user)) -> dict[str, object]:
+    if not user.can("read:state"):
+        raise HTTPException(status_code=403, detail="permission denied")
+    try:
+        return raster_metadata(map_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/afsim/maps/{map_id}/texture.jpg")
+async def afsim_map_texture(map_id: str, z: int = 3, user: User = Depends(current_user)) -> FileResponse:
+    if not user.can("read:state"):
+        raise HTTPException(status_code=403, detail="permission denied")
+    try:
+        path, media_type, _meta = compose_raster_texture(map_id, z)
+    except (FileNotFoundError, KeyError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return FileResponse(
+        path,
+        media_type=media_type,
+        headers={"Cache-Control": "public, max-age=86400, immutable"},
+    )
+
+
+@app.get("/api/afsim/maps/{map_id}/{z}/{x}/{tile}")
+async def afsim_map_tile(
+    map_id: str,
+    z: int,
+    x: int,
+    tile: str,
+    user: User = Depends(current_user),
+) -> Response:
+    if not user.can("read:state"):
+        raise HTTPException(status_code=403, detail="permission denied")
+    y_token = tile.split(".", 1)[0]
+    try:
+        y = int(y_token)
+        body, media_type, _meta = read_raster_tile(map_id, z, x, y)
+    except (FileNotFoundError, KeyError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return Response(
+        content=body,
+        media_type=media_type,
+        headers={"Cache-Control": "public, max-age=86400, immutable"},
+    )
+
+
 @app.get("/api/afsim/demos")
 async def afsim_demos(user: User = Depends(current_user)) -> list[dict[str, object]]:
     if not user.can("read:state"):
@@ -197,6 +278,38 @@ async def afsim_runs(user: User = Depends(current_user)) -> list[dict[str, objec
     if not user.can("read:report"):
         raise HTTPException(status_code=403, detail="permission denied")
     return list_runs()
+
+
+@app.get("/api/afsim/jobs")
+async def afsim_jobs(user: User = Depends(current_user)) -> list[dict[str, object]]:
+    if not user.can("read:report"):
+        raise HTTPException(status_code=403, detail="permission denied")
+    return afsim_job_manager.list()
+
+
+@app.get("/api/afsim/jobs/{job_id}")
+async def afsim_job(job_id: str, user: User = Depends(current_user)) -> dict[str, object]:
+    if not user.can("read:report"):
+        raise HTTPException(status_code=403, detail="permission denied")
+    try:
+        return afsim_job_manager.get(job_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/afsim/jobs/{job_id}/replay")
+async def afsim_job_replay(job_id: str, user: User = Depends(current_user)) -> dict[str, object]:
+    if not user.can("read:report"):
+        raise HTTPException(status_code=403, detail="permission denied")
+    try:
+        job = afsim_job_manager.get(job_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    run = job.get("run") or {}
+    run_id = run.get("run_id")
+    if not run_id:
+        raise HTTPException(status_code=409, detail="AFSIM job has not produced a run yet")
+    return replay_for_run(str(run_id))
 
 
 @app.get("/api/afsim/workbench")
@@ -372,6 +485,22 @@ async def afsim_run_design(
     return {"run": result, "replay": replay}
 
 
+@app.post("/api/afsim/designs/{scenario_id}/run/jobs")
+async def afsim_run_design_job(
+    scenario_id: str,
+    payload: AFSimGeneratedRunRequest,
+    user: User = Depends(current_user),
+) -> dict[str, object]:
+    if not user.can("control:sim"):
+        raise HTTPException(status_code=403, detail="permission denied")
+    try:
+        job = afsim_job_manager.submit_generated(scenario_id, payload.timeout_seconds)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    storage.add_event("afsim.generated.job.started", {"job_id": job["job_id"], "scenario_id": scenario_id})
+    return job
+
+
 @app.post("/api/agent/tick")
 async def agent_tick(payload: AFSimAgentTickRequest, user: User = Depends(current_user)) -> dict[str, object]:
     if not user.can("ask:llm"):
@@ -405,6 +534,18 @@ async def afsim_run(payload: AFSimRunRequest, user: User = Depends(current_user)
     replay = replay_for_run(str(result["run_id"]))
     storage.add_event("afsim.run", result)
     return {"run": result, "replay": replay}
+
+
+@app.post("/api/afsim/run/jobs")
+async def afsim_run_job(payload: AFSimRunRequest, user: User = Depends(current_user)) -> dict[str, object]:
+    if not user.can("control:sim"):
+        raise HTTPException(status_code=403, detail="permission denied")
+    try:
+        job = afsim_job_manager.submit_demo(payload.demo_name, payload.input_file, payload.timeout_seconds)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    storage.add_event("afsim.job.started", {"job_id": job["job_id"], "demo_name": payload.demo_name})
+    return job
 
 
 @app.post("/api/afsim/analyze")
@@ -465,6 +606,24 @@ async def afsim_realtime_socket(websocket: WebSocket) -> None:
             frame_id += 1
             sim_time += interval_seconds
             await asyncio.sleep(max(0.1, interval_seconds))
+    except WebSocketDisconnect:
+        return
+
+
+@app.websocket("/ws/afsim/jobs/{job_id}")
+async def afsim_job_socket(websocket: WebSocket, job_id: str) -> None:
+    await websocket.accept()
+    try:
+        cursor = int(websocket.query_params.get("cursor") or 0)
+    except ValueError:
+        cursor = 0
+    try:
+        await websocket.send_json({"type": "job", "job": afsim_job_manager.get(job_id)})
+        async for event in stream_job_events(job_id, cursor):
+            await websocket.send_json({"type": "progress", "event": event, "job": afsim_job_manager.get(job_id)})
+        await websocket.send_json({"type": "job", "job": afsim_job_manager.get(job_id)})
+    except FileNotFoundError as exc:
+        await websocket.send_json({"type": "error", "error": str(exc)})
     except WebSocketDisconnect:
         return
     except Exception as exc:

@@ -73,7 +73,7 @@ SILICONFLOW_API_KEY=你的Key
 1. 打开页面后默认载入生成场景库中的最新场景；没有生成场景时载入官方 demo。
 2. 左侧“图层”面板控制图层显隐、透明度、锁定和查询，点击“保存状态”会写入 `runtime/workbench/layer_state.json`。
 3. 左侧“资源”面板从模板添加平台，编辑平台属性后可“生成 AFSIM 场景”，也可先“保存中间 JSON”。
-4. 左侧“场景”面板可选择生成场景或官方 demo，并运行本地 `mission.exe`。
+4. 左侧“场景”面板可选择生成场景或官方 demo，并通过后台作业运行本地 `mission.exe`；页面会显示作业号、运行目录、输出文件和日志尾部。
 5. 中央地图支持 `2D`、`3D`、`分屏`、实时态势流、跟随、框选状态和视角复位。
 6. 点击右侧“事件”里的“刷新复盘”会优先读取最近一次可生成 replay frame 的 AFSIM 运行输出；拖动底部时间轴可按帧更新地图目标位置。若最新运行只有日志事件没有坐标帧，接口会回退到最近一个可回放运行，并在 `summary.selection_policy` 中标记。
 7. 底部仿真控制条支持启动、暂停、继续、加速、减速、单步、复位和终止，并显示时间、目标数、事件数和复盘帧数。
@@ -100,11 +100,17 @@ SILICONFLOW_API_KEY=你的Key
 - `DELETE /api/afsim/designs/{scenario_id}`
 - `GET /api/afsim/designs/{scenario_id}/scene`
 - `POST /api/afsim/designs/{scenario_id}/run`
+- `POST /api/afsim/designs/{scenario_id}/run/jobs`
+- `GET /api/afsim/jobs`
+- `GET /api/afsim/jobs/{job_id}`
+- `GET /api/afsim/jobs/{job_id}/replay`
 - `POST /api/afsim/run`
+- `POST /api/afsim/run/jobs`
 - `POST /api/afsim/analyze`
 - `POST /api/agent/tick`
 - `POST /api/commands/apply`
 - `WS /ws/afsim/realtime`
+- `WS /ws/afsim/jobs/{job_id}`
 
 ## 新增工作台数据契约
 
@@ -127,6 +133,8 @@ SILICONFLOW_API_KEY=你的Key
 ```
 
 图层和草稿只写入项目自身的 `runtime/workbench`，不会写入 AFSIM 安装目录，也不会直接改官方 demo 或原始想定文件。
+
+官方 demo 运行也不会直接在 AFSIM 安装目录执行：后端会把 demo 和入口文件声明的 `file_path` 依赖复制到 `runtime/afsim_workdirs/<run_id>/`，再调用原始安装目录中的 `bin/mission.exe`。本次 `.log/.evt/.aer/.csv` 与进程 stdout/stderr 统一归档到 `runtime/afsim_runs/<run_id>/`。
 
 `GET /api/afsim/replay/latest` 返回最近一次 AFSIM 运行的复盘数据：
 
@@ -154,6 +162,6 @@ SILICONFLOW_API_KEY=你的Key
 - 扩展 AFSIM 输入语法解析，覆盖更多 `platform_type`、传感器、武器、通信和任务配置。
 - 扩展 `.evt/.csv` 事件类型覆盖，识别命中、拦截、通信中断、链路建立和任务处理器事件。
 - 接入 `.aer`/DIS/event pipe 的专用解码路径，把预览帧替换为更完整的权威仿真输出帧。
-- 复用 `resources/maps` 和 `resources/models/mil-std2525d`，继续提高地图底图、军标和符号风格的一致性。
+- 继续扩展 `resources/models/mil-std2525d` 的军标/模型加载；地图底图已通过 `/api/afsim/maps` 服务化 AFSIM MBTiles 与 Shapefile。
 - 增加图上拖放、绘制区域/航路、批量目标生成和 AFSIM 场景同步器。
 - 增加数据库化场景版本管理、运行记录索引和复盘库。

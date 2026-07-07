@@ -160,6 +160,11 @@ textarea {
   color: var(--danger);
 }
 
+.topbar-controls .running {
+  border-color: var(--amber);
+  color: #ffe1a6;
+}
+
 .workspace {
   display: grid;
   grid-template-columns: 340px minmax(520px, 1fr) 360px;

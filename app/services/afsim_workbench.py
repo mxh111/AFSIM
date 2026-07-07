@@ -10,10 +10,11 @@ from pathlib import Path
 from typing import Any
 
 from app.core.config import PROJECT_ROOT
+from app.services.afsim_maps import map_resource_manifest
 from app.services.afsim_design import read_generated_scenario
 from app.services.afsim_parser import parse_demo_scenario, parse_scenario_file
 from app.services.afsim_replay import build_latest_replay, build_run_replay
-from app.services.afsim_runner import afsim_paths, list_runs
+from app.services.afsim_runner import list_runs
 
 
 WORKBENCH_ROOT = PROJECT_ROOT / "runtime" / "workbench"
@@ -966,27 +967,7 @@ def _load_parsed_scene(
 
 
 def _map_resource_manifest() -> dict[str, Any]:
-    paths = afsim_paths()
-    maps_root = paths.root / "resources" / "maps"
-    models_root = paths.root / "resources" / "models"
-    return {
-        "source": "local_afsim_resources",
-        "readonly": True,
-        "maps_root": str(maps_root),
-        "models_root": str(models_root),
-        "offline_maps": [
-            {"id": "bluemarble", "name": "Blue Marble", "kind": "mbtiles", "exists": (maps_root / "bluemarble_db" / "bmng.mbtiles").exists()},
-            {"id": "naturalearth", "name": "Natural Earth", "kind": "mbtiles", "exists": (maps_root / "naturalearth_db" / "natural.mbtiles").exists()},
-            {"id": "political", "name": "Political Borders", "kind": "mbtiles", "exists": (maps_root / "political_db" / "border.mbtiles").exists()},
-            {"id": "coastline", "name": "NE 50m Coastline", "kind": "shapefile", "exists": (maps_root / "layers" / "ne_50m_coastline.shp").exists()},
-        ],
-        "model_catalog": {
-            "milstd_mapping": str(models_root / "milStdIconMappings.csv"),
-            "simple_models": str(models_root / "simple"),
-            "three_d_models": str(models_root / "3d"),
-            "note": "OSGB/native AFSIM models are referenced only; browser renderer uses Three.js simplified geometry in this phase.",
-        },
-    }
+    return map_resource_manifest()
 
 
 def _environment_state(bounds: dict[str, float] | None) -> dict[str, Any]:

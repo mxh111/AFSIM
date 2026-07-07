@@ -29,6 +29,9 @@ const state = {
   liveSocket: null,
   liveActive: false,
   lastRunId: null,
+  activeAfsimJobId: null,
+  afsimJobSocket: null,
+  afsimRunBusy: false,
   playSpeed: 1,
 };
 
@@ -903,6 +906,119 @@ function focusLayer(layer) {
   renderMap();
 }
 
+function setAfsimRunBusy(isBusy, message = "") {
+  state.afsimRunBusy = Boolean(isBusy);
+  els.runGenerated.disabled = state.afsimRunBusy;
+  els.runDemo.disabled = state.afsimRunBusy;
+  els.saveScenario.disabled = state.afsimRunBusy;
+  els.previewDemo.disabled = state.afsimRunBusy;
+  els.runGenerated.textContent = state.afsimRunBusy ? "运行中" : "运行";
+  els.runDemo.textContent = state.afsimRunBusy ? "mission.exe 运行中" : "运行当前 Demo";
+  els.missionStatus.textContent = state.afsimRunBusy ? "mission running" : "mission OK";
+  els.missionStatus.classList.toggle("running", state.afsimRunBusy);
+  if (message) els.eventLog.textContent = message;
+}
+
+function websocketUrl(path) {
+  const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+  return `${protocol}://${window.location.host}${path}`;
+}
+
+function formatJobProgress(job, event = null) {
+  const progress = event?.progress || job?.progress || {};
+  const request = job?.request || {};
+  const tail = (progress.tail || []).slice(-12).join("\n");
+  const files = (progress.files || []).slice(-10).map((file) => `${file.name} ${Math.round((file.size || 0) / 1024)}KB`).join(", ") || "等待输出";
+  return [
+    `AFSIM 作业：${job?.job_id || state.activeAfsimJobId || "-"}`,
+    `类型：${request.kind || "-"} ${request.demo_name || request.scenario_id || ""}`,
+    `状态：${job?.status || "-"} / ${event?.phase || job?.phase || "-"}`,
+    `耗时：${Number(progress.elapsed_seconds || 0).toFixed(1)}s`,
+    `运行目录：${progress.run_dir || "-"}`,
+    `输出文件：${files}`,
+    tail ? `\n日志尾部：\n${tail}` : "",
+  ].filter(Boolean).join("\n");
+}
+
+async function replayForJob(jobId) {
+  return api(`/api/afsim/jobs/${encodeURIComponent(jobId)}/replay`);
+}
+
+async function pollAfsimJob(jobId, label) {
+  while (true) {
+    const job = await api(`/api/afsim/jobs/${encodeURIComponent(jobId)}`);
+    els.eventLog.textContent = formatJobProgress(job);
+    if (job.status === "finished") {
+      const replay = await replayForJob(jobId);
+      await handleRunResponse({ run: job.run, replay }, label);
+      return job;
+    }
+    if (job.status === "failed") {
+      throw new Error(job.error || "AFSIM 作业失败");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+}
+
+function waitForAfsimJob(job, label) {
+  state.activeAfsimJobId = job.job_id;
+  if (state.afsimJobSocket) state.afsimJobSocket.close();
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let fallbackStarted = false;
+    const finish = async (finishedJob) => {
+      if (settled) return;
+      settled = true;
+      try {
+        const replay = await replayForJob(job.job_id);
+        await handleRunResponse({ run: finishedJob.run, replay }, label);
+        resolve(finishedJob);
+      } catch (error) {
+        reject(error);
+      } finally {
+        if (state.afsimJobSocket) state.afsimJobSocket.close();
+        state.afsimJobSocket = null;
+      }
+    };
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      if (state.afsimJobSocket) state.afsimJobSocket.close();
+      state.afsimJobSocket = null;
+      reject(error instanceof Error ? error : new Error(String(error)));
+    };
+    const startFallback = () => {
+      if (fallbackStarted || settled) return;
+      fallbackStarted = true;
+      pollAfsimJob(job.job_id, label).then(resolve).catch(reject);
+    };
+    const socket = new WebSocket(websocketUrl(`/ws/afsim/jobs/${encodeURIComponent(job.job_id)}`));
+    state.afsimJobSocket = socket;
+    const fallbackTimer = setTimeout(startFallback, 3500);
+    socket.addEventListener("message", async (message) => {
+      const payload = JSON.parse(message.data);
+      if (payload.type === "error" || payload.error) {
+        fail(new Error(payload.error || "AFSIM 作业流错误"));
+        return;
+      }
+      const event = payload.event || null;
+      const currentJob = payload.job || job;
+      clearTimeout(fallbackTimer);
+      els.eventLog.textContent = formatJobProgress(currentJob, event);
+      if (currentJob.status === "finished" && currentJob.run) {
+        await finish(currentJob);
+      } else if (currentJob.status === "failed") {
+        fail(new Error(currentJob.error || event?.error || "AFSIM 作业失败"));
+      }
+    });
+    socket.addEventListener("error", startFallback);
+    socket.addEventListener("close", () => {
+      clearTimeout(fallbackTimer);
+      if (!settled && !fallbackStarted) startFallback();
+    });
+  });
+}
+
 async function saveScenario() {
   if (!state.editorPlatforms.length) throw new Error("至少需要一个平台");
   els.eventLog.textContent = "正在生成 AFSIM 场景...";
@@ -922,24 +1038,35 @@ async function ensureActiveScenario() {
 }
 
 async function runGeneratedScenario() {
-  const scenarioId = await ensureActiveScenario();
-  els.eventLog.textContent = `正在运行生成场景：${scenarioId}`;
-  const run = await api(`/api/afsim/designs/${encodeURIComponent(scenarioId)}/run`, {
-    method: "POST",
-    body: JSON.stringify({ timeout_seconds: 180 }),
-  });
-  await handleRunResponse(run, `生成场景 ${scenarioId}`);
+  if (state.afsimRunBusy) return;
+  setAfsimRunBusy(true, "正在准备生成场景并调用本机 AFSIM mission.exe...");
+  try {
+    const scenarioId = await ensureActiveScenario();
+    setAfsimRunBusy(true, `正在提交生成场景 AFSIM 作业：${scenarioId}\n后端将调用本机 mission.exe，并通过 WebSocket 推送输出进度。`);
+    const job = await api(`/api/afsim/designs/${encodeURIComponent(scenarioId)}/run/jobs`, {
+      method: "POST",
+      body: JSON.stringify({ timeout_seconds: 180 }),
+    });
+    await waitForAfsimJob(job, `生成场景 ${scenarioId}`);
+  } finally {
+    setAfsimRunBusy(false);
+  }
 }
 
 async function runDemo() {
+  if (state.afsimRunBusy) return;
   const selected = els.afsimDemo.options[els.afsimDemo.selectedIndex];
   if (!selected) throw new Error("没有可用 AFSIM demo");
-  els.eventLog.textContent = `正在运行 Demo：${selected.value}`;
-  const run = await api("/api/afsim/run", {
-    method: "POST",
-    body: JSON.stringify({ demo_name: selected.value, input_file: selected.dataset.input, timeout_seconds: 180 }),
-  });
-  await handleRunResponse(run, `Demo ${selected.value}`);
+  setAfsimRunBusy(true, `正在提交 Demo AFSIM 作业：${selected.value}\n后端将在二开 runtime 工作目录运行 mission.exe，并推送 .log/.evt/.aer 进度。`);
+  try {
+    const job = await api("/api/afsim/run/jobs", {
+      method: "POST",
+      body: JSON.stringify({ demo_name: selected.value, input_file: selected.dataset.input, timeout_seconds: 180 }),
+    });
+    await waitForAfsimJob(job, `Demo ${selected.value}`);
+  } finally {
+    setAfsimRunBusy(false);
+  }
 }
 
 async function handleRunResponse(payload, label) {

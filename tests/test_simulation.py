@@ -3,11 +3,12 @@ from pathlib import Path
 from app.models import CommanderCommand
 from app.models import AFSimDesignedPlatform, AFSimRoutePoint, AFSimScenarioDesign
 from app.services.afsim_design import generate_scenario, read_generated_scenario
+from app.services.afsim_maps import map_resource_manifest, raster_metadata, read_raster_tile, vector_geojson
 from app.services.afsim_parser import parse_demo_scenario
 from app.services.afsim_parser import parse_scenario_file
 from app.services.afsim_realtime import build_realtime_frame
 from app.services.afsim_replay import build_latest_replay, build_run_replay
-from app.services.afsim_runner import discover_demos, run_generated_scenario, status
+from app.services.afsim_runner import afsim_paths, discover_demos, run_demo, run_generated_scenario, status
 from app.services.afsim_workbench import build_workbench_state, default_layer_catalog
 from app.services.afsim_workbench import replay_for_run
 from app.services.simulation import SimulationEngine
@@ -39,6 +40,30 @@ def test_afsim_installation_is_discoverable():
     assert afsim_status["mission_exists"]
     demos = discover_demos()
     assert any(demo["name"] == "simple_scenario" for demo in demos)
+
+
+def test_afsim_map_resources_are_served_from_local_assets():
+    manifest = map_resource_manifest()
+    assert manifest["tile_scheme"] == "afsim_plate_carree"
+    assert any(layer["id"] == "bluemarble" and layer["exists"] for layer in manifest["raster_layers"])
+    assert any(layer["id"] == "coastline" and layer["exists"] for layer in manifest["vector_layers"])
+
+    meta = raster_metadata("bluemarble")
+    assert meta["profile"] == "afsim_plate_carree"
+    assert meta["max_zoom"] >= 1
+    body, media_type, _ = read_raster_tile("bluemarble", 1, 0, 0)
+    assert media_type == "image/jpeg"
+    assert body.startswith(b"\xff\xd8")
+
+
+def test_afsim_vector_layers_convert_to_geojson():
+    coastline = vector_geojson("coastline", simplify=0.1, max_features=3)
+    political = vector_geojson("pol", simplify=1.0, max_features=3)
+    us = vector_geojson("us", simplify=0.01, max_features=3)
+    for payload in (coastline, political, us):
+        assert payload["type"] == "FeatureCollection"
+        assert payload["features"]
+        assert payload["features"][0]["geometry"]["type"] == "MultiLineString"
 
 
 def test_afsim_scenario_parser_extracts_platforms():
@@ -233,3 +258,69 @@ def test_generated_afsim_design_runs_with_mission():
     replay = replay_for_run(run["run_id"])
     assert replay["summary"]["run_id"] == run["run_id"]
     assert replay["schema_version"] == "afsim-replay.v1"
+
+
+def test_demo_run_uses_runtime_workdir_and_preserves_original_demo():
+    run = run_demo("simple_scenario", "simple_scenario.txt", 30)
+    afsim_root = afsim_paths().root.resolve()
+    working_dir = Path(str(run["working_dir"])).resolve()
+    run_dir = Path(str(run["run_dir"])).resolve()
+
+    assert run["returncode"] == 0
+    assert afsim_root not in working_dir.parents
+    assert working_dir != afsim_root
+    assert "runtime" in working_dir.parts
+    assert run_dir.exists()
+    assert any(file["name"].endswith((".evt", ".aer", ".log")) for file in run["files"])
+
+
+def test_afsim_job_manager_runs_generated_scenario_and_binds_replay():
+    from app.services.afsim_jobs import AFSimRunJobManager
+
+    design = AFSimScenarioDesign(
+        name="pytest_job_design",
+        end_time_seconds=20,
+        platforms=[
+            AFSimDesignedPlatform(
+                name="Blue_Job",
+                side="blue",
+                category="fighter",
+                icon="F-22",
+                lat=1.05,
+                lon=1.05,
+                altitude_m=9000,
+                speed_kts=320,
+                heading_deg=90,
+                route=[AFSimRoutePoint(lat=1.05, lon=1.1, altitude_m=9000, speed_kts=320)],
+            ),
+            AFSimDesignedPlatform(
+                name="Red_Job",
+                side="red",
+                category="fighter",
+                icon="SU-27",
+                lat=1.2,
+                lon=1.3,
+                altitude_m=8500,
+                speed_kts=330,
+                heading_deg=270,
+                route=[AFSimRoutePoint(lat=1.2, lon=1.25, altitude_m=8500, speed_kts=330)],
+            ),
+        ],
+    )
+    generated = generate_scenario(design)
+    manager = AFSimRunJobManager()
+    job = manager.submit_generated(generated["scenario_id"], 30)
+    for _ in range(120):
+        job = manager.get(job["job_id"])
+        if job["status"] in {"finished", "failed"}:
+            break
+        import time
+
+        time.sleep(0.25)
+
+    assert job["status"] == "finished"
+    assert job["run"]["returncode"] == 0
+    assert job["replay_summary"]["run_id"] == job["run"]["run_id"]
+    events, _ = manager.events_since(job["job_id"], 0)
+    assert any(event["phase"] == "running" for event in events)
+    assert any(event["phase"] == "finished" for event in events)

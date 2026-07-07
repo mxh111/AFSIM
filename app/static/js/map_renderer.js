@@ -5,7 +5,12 @@ let globeState = {
   renderer: null,
   geometries: [],
   materials: [],
+  textures: [],
 };
+
+const TILE_SIZE = 256;
+const rasterTileCache = new Map();
+const vectorLayerCache = new Map();
 
 export function sideColor(side) {
   if (side === "blue") return "#5aa7ff";
@@ -35,7 +40,8 @@ function disposeGlobe() {
   if (globeState.renderer) globeState.renderer.dispose();
   globeState.geometries.forEach((geometry) => geometry.dispose());
   globeState.materials.forEach((material) => material.dispose());
-  globeState = { animationId: null, renderer: null, geometries: [], materials: [] };
+  globeState.textures.forEach((texture) => texture.dispose());
+  globeState = { animationId: null, renderer: null, geometries: [], materials: [], textures: [] };
 }
 
 function mergeFrameEntities(scene, frame) {
@@ -179,132 +185,186 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+function resourceList(scene, key) {
+  const value = scene?.map_resources?.[key];
+  return Array.isArray(value) ? value : [];
+}
+
+function rasterResource(scene, id) {
+  return resourceList(scene, "raster_layers").find((item) => item.id === id) || null;
+}
+
+function vectorResource(scene, id) {
+  return resourceList(scene, "vector_layers").find((item) => item.id === id || (item.aliases || []).includes(id)) || null;
+}
+
+function replaceTileTemplate(template, z, x, y) {
+  return template
+    .replaceAll("{z}", String(z))
+    .replaceAll("{x}", String(x))
+    .replaceAll("{y}", String(y));
+}
+
+function rasterTileUrl(scene, id, z, x, y) {
+  const resource = rasterResource(scene, id);
+  const template = resource?.tile_url_template || `/api/afsim/maps/${id}/{z}/{x}/{y}.png`;
+  return replaceTileTemplate(template, z, x, y);
+}
+
+function loadRasterTile(url, redraw) {
+  let item = rasterTileCache.get(url);
+  if (!item) {
+    const image = new Image();
+    item = { image, status: "loading", callbacks: new Set() };
+    rasterTileCache.set(url, item);
+    image.onload = () => {
+      item.status = "ready";
+      for (const callback of item.callbacks) callback();
+      item.callbacks.clear();
+    };
+    image.onerror = () => {
+      item.status = "error";
+      item.callbacks.clear();
+    };
+    image.src = url;
+  }
+  if (item.status === "loading" && redraw) item.callbacks.add(redraw);
+  return item;
+}
+
+function choosePlateCarreeZoom(resource, view, width, height) {
+  const minZoom = Number(resource?.min_zoom ?? 0);
+  const maxZoom = Number(resource?.max_zoom ?? 6);
+  const lonSpan = Math.max(0.000001, view.max_lon - view.min_lon);
+  const latSpan = Math.max(0.000001, view.max_lat - view.min_lat);
+  const pxPerDegree = Math.max(width / lonSpan, height / latSpan);
+  const ideal = Math.ceil(Math.log2(Math.max(1, (pxPerDegree * 180) / TILE_SIZE)));
+  return Math.max(minZoom, Math.min(maxZoom, ideal));
+}
+
+function drawPlateCarreeRaster(ctx, width, height, view, scene, mapId, opacity, redraw) {
+  const resource = rasterResource(scene, mapId);
+  if (!resource?.exists) return false;
+  const z = choosePlateCarreeZoom(resource, view, width, height);
+  const cols = 2 ** (z + 1);
+  const rows = 2 ** z;
+  const tileLonSpan = 360 / cols;
+  const tileLatSpan = 180 / rows;
+  const lonSpan = Math.max(0.000001, view.max_lon - view.min_lon);
+  const latSpan = Math.max(0.000001, view.max_lat - view.min_lat);
+  const xStart = clamp(Math.floor((view.min_lon + 180) / tileLonSpan), 0, cols - 1);
+  const xEnd = clamp(Math.floor((view.max_lon + 180 - 1e-9) / tileLonSpan), 0, cols - 1);
+  const yStart = clamp(Math.floor((90 - view.max_lat) / tileLatSpan), 0, rows - 1);
+  const yEnd = clamp(Math.floor((90 - view.min_lat - 1e-9) / tileLatSpan), 0, rows - 1);
+
+  ctx.save();
+  ctx.globalAlpha = opacity;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  for (let y = yStart; y <= yEnd; y += 1) {
+    const north = 90 - y * tileLatSpan;
+    const south = north - tileLatSpan;
+    const dy = ((view.max_lat - north) / latSpan) * height;
+    const dh = (tileLatSpan / latSpan) * height;
+    for (let x = xStart; x <= xEnd; x += 1) {
+      const west = -180 + x * tileLonSpan;
+      const dx = ((west - view.min_lon) / lonSpan) * width;
+      const dw = (tileLonSpan / lonSpan) * width;
+      const item = loadRasterTile(rasterTileUrl(scene, mapId, z, x, y), redraw);
+      if (item.status === "ready") {
+        ctx.drawImage(item.image, dx, dy, dw + 0.75, dh + 0.75);
+      }
+    }
+  }
+  ctx.restore();
+  return true;
+}
+
+function loadVectorLayer(url, redraw) {
+  let item = vectorLayerCache.get(url);
+  if (!item) {
+    item = { status: "loading", data: null, callbacks: new Set() };
+    vectorLayerCache.set(url, item);
+    fetch(url)
+      .then((response) => {
+        if (!response.ok) throw new Error(`vector layer ${response.status}`);
+        return response.json();
+      })
+      .then((data) => {
+        item.status = "ready";
+        item.data = data;
+        for (const callback of item.callbacks) callback();
+        item.callbacks.clear();
+      })
+      .catch(() => {
+        item.status = "error";
+        item.callbacks.clear();
+      });
+  }
+  if (item.status === "loading" && redraw) item.callbacks.add(redraw);
+  return item;
+}
+
+function vectorLayerUrl(scene, id, simplify = 0.02) {
+  const resource = vectorResource(scene, id);
+  if (!resource?.exists) return null;
+  const base = resource.geojson_url || `/api/afsim/maps/vectors/${resource.id}.geojson`;
+  const join = base.includes("?") ? "&" : "?";
+  return `${base}${join}simplify=${encodeURIComponent(simplify)}`;
+}
+
+function drawGeoJsonLine(ctx, project, coordinates) {
+  let started = false;
+  for (const point of coordinates || []) {
+    const lon = Number(point?.[0]);
+    const lat = Number(point?.[1]);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+      started = false;
+      continue;
+    }
+    const screen = project(lat, lon);
+    if (!started) {
+      ctx.moveTo(screen.x, screen.y);
+      started = true;
+    } else {
+      ctx.lineTo(screen.x, screen.y);
+    }
+  }
+}
+
+function drawVectorLayer(ctx, project, scene, id, style, redraw) {
+  const url = vectorLayerUrl(scene, id, style.simplify ?? 0.02);
+  if (!url) return;
+  const item = loadVectorLayer(url, redraw);
+  if (item.status !== "ready" || !item.data?.features?.length) return;
+  ctx.save();
+  ctx.globalAlpha = style.opacity ?? 0.5;
+  ctx.strokeStyle = style.color || "#9fb6b2";
+  ctx.lineWidth = style.width ?? 1;
+  if (style.dash) ctx.setLineDash(style.dash);
+  ctx.beginPath();
+  for (const feature of item.data.features) {
+    const geometry = feature.geometry || {};
+    const coordinates = geometry.coordinates || [];
+    if (geometry.type === "LineString") {
+      drawGeoJsonLine(ctx, project, coordinates);
+    } else if (geometry.type === "MultiLineString") {
+      for (const line of coordinates) drawGeoJsonLine(ctx, project, line);
+    } else if (geometry.type === "Polygon") {
+      for (const ring of coordinates) drawGeoJsonLine(ctx, project, ring);
+    } else if (geometry.type === "MultiPolygon") {
+      for (const polygon of coordinates) {
+        for (const ring of polygon) drawGeoJsonLine(ctx, project, ring);
+      }
+    }
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
 function noise(lat, lon, seed = 0) {
   const value = Math.sin(lat * 12.9898 + lon * 78.233 + seed * 37.719) * 43758.5453;
   return value - Math.floor(value);
-}
-
-function terrainTone(lat, lon, domain) {
-  const wave = (noise(lat * 0.18, lon * 0.22, 1) + noise(lat * 0.43, lon * 0.31, 2) * 0.65) / 1.65;
-  const aridBand = Math.abs(lat) < 32 && wave > 0.42;
-  const polar = Math.abs(lat) > 58;
-  const urban = noise(lat * 0.8, lon * 0.8, 5) > 0.86;
-  if (domain === "space") return { fill: "#10242b", shade: wave, className: "space" };
-  if (polar) return { fill: wave > 0.48 ? "#d0d7d2" : "#738487", shade: wave, className: "snow" };
-  if (urban) return { fill: "#29353a", shade: wave, className: "city" };
-  if (aridBand) return { fill: wave > 0.68 ? "#71684d" : "#4a4d3a", shade: wave, className: "desert" };
-  if (wave > 0.7) return { fill: "#4f5a57", shade: wave, className: "hills" };
-  if (wave > 0.48) return { fill: "#284838", shade: wave, className: "forest" };
-  return { fill: "#243b33", shade: wave, className: "grass" };
-}
-
-function drawProceduralBasemap(ctx, width, height, view, layers, domain) {
-  if (!layerVisible(layers, "base.imagery") && !layerVisible(layers, "base.terrain") && !layerVisible(layers, "base.vegetation")) return;
-  const imageryAlpha = layerOpacity(layers, "base.imagery", 0.34);
-  const terrainAlpha = layerOpacity(layers, "base.terrain", 0.45);
-  const cell = domain === "space" ? 24 : 18;
-  ctx.save();
-  ctx.globalAlpha = clamp(imageryAlpha + terrainAlpha * 0.45, 0.12, 0.72);
-  for (let y = 0; y < height; y += cell) {
-    for (let x = 0; x < width; x += cell) {
-      const lat = view.max_lat - ((y + cell / 2) / height) * (view.max_lat - view.min_lat);
-      const lon = view.min_lon + ((x + cell / 2) / width) * (view.max_lon - view.min_lon);
-      const tone = terrainTone(lat, lon, domain);
-      ctx.fillStyle = tone.fill;
-      ctx.fillRect(x, y, cell + 1, cell + 1);
-      if (layerVisible(layers, "base.vegetation") && tone.className === "forest") {
-        ctx.fillStyle = "rgba(73, 120, 82, 0.26)";
-        ctx.fillRect(x + 2, y + 2, cell - 4, cell - 4);
-      }
-    }
-  }
-  ctx.restore();
-}
-
-function drawSyntheticFeatures(ctx, width, height, layers) {
-  if (layerVisible(layers, "base.water")) {
-    ctx.save();
-    ctx.globalAlpha = layerOpacity(layers, "base.water", 0.42);
-    ctx.strokeStyle = "#315f6f";
-    ctx.lineWidth = 1.4;
-    for (let row = 0; row < 3; row += 1) {
-      ctx.beginPath();
-      for (let i = 0; i <= 80; i += 1) {
-        const x = (i / 80) * width;
-        const y = height * (0.25 + row * 0.22) + Math.sin(i * 0.25 + row) * 18;
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      }
-      ctx.stroke();
-    }
-    ctx.restore();
-  }
-
-  if (layerVisible(layers, "base.roads")) {
-    ctx.save();
-    ctx.globalAlpha = layerOpacity(layers, "base.roads", 0.44);
-    ctx.strokeStyle = "#8a7f60";
-    ctx.lineWidth = 1;
-    ctx.setLineDash([10, 8]);
-    for (let col = 0; col < 4; col += 1) {
-      ctx.beginPath();
-      for (let i = 0; i <= 60; i += 1) {
-        const x = width * (0.12 + col * 0.24) + Math.sin(i * 0.22 + col) * 24;
-        const y = (i / 60) * height;
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      }
-      ctx.stroke();
-    }
-    ctx.restore();
-  }
-
-  if (layerVisible(layers, "base.admin_boundaries")) {
-    ctx.save();
-    ctx.globalAlpha = layerOpacity(layers, "base.admin_boundaries", 0.42);
-    ctx.strokeStyle = "#6b7f87";
-    ctx.setLineDash([2, 7]);
-    for (let i = 1; i < 4; i += 1) {
-      ctx.beginPath();
-      ctx.moveTo((width / 4) * i, 0);
-      ctx.bezierCurveTo(width * 0.5, height * 0.25, width * 0.35, height * 0.68, (width / 4) * i, height);
-      ctx.stroke();
-    }
-    ctx.restore();
-  }
-
-  if (layerVisible(layers, "base.cities")) {
-    ctx.save();
-    ctx.globalAlpha = layerOpacity(layers, "base.cities", 0.5);
-    ctx.fillStyle = "#7c8a8b";
-    for (let i = 0; i < 18; i += 1) {
-      const x = width * (0.08 + noise(i, 2, 4) * 0.84);
-      const y = height * (0.12 + noise(i, 7, 8) * 0.76);
-      ctx.fillRect(x - 2, y - 2, 4, 4);
-      ctx.strokeStyle = "rgba(124, 138, 139, 0.25)";
-      ctx.strokeRect(x - 8, y - 6, 16, 12);
-    }
-    ctx.restore();
-  }
-}
-
-function drawContours(ctx, width, height, layers) {
-  if (!layerVisible(layers, "base.contours")) return;
-  ctx.save();
-  ctx.globalAlpha = layerOpacity(layers, "base.contours", 0.38);
-  ctx.strokeStyle = "#6e7d67";
-  ctx.lineWidth = 0.8;
-  for (let row = 0; row < 11; row += 1) {
-    ctx.beginPath();
-    for (let i = 0; i <= 90; i += 1) {
-      const x = (i / 90) * width;
-      const y = height * (0.08 + row * 0.085) + Math.sin(i * 0.18 + row * 1.7) * 8;
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    }
-    ctx.stroke();
-  }
-  ctx.restore();
 }
 
 function haversineKm(a, b) {
@@ -330,38 +390,68 @@ function niceScale(km) {
   return steps.find((step) => step >= km) || 5000;
 }
 
-function drawGrid(ctx, width, height, view, layers, domain = "earth") {
-  if (layerVisible(layers, "base.dark_basemap")) {
+function drawGrid(ctx, width, height, view, layers, domain = "earth", scene = {}, redraw = null) {
+  ctx.fillStyle = "#020507";
+  ctx.fillRect(0, 0, width, height);
+
+  const lonSpan = Math.max(0.000001, view.max_lon - view.min_lon);
+  const latSpan = Math.max(0.000001, view.max_lat - view.min_lat);
+  const project = (lat, lon) => ({
+    x: ((lon - view.min_lon) / lonSpan) * width,
+    y: height - ((lat - view.min_lat) / latSpan) * height,
+  });
+
+  let drewRaster = false;
+  if (layerVisible(layers, "base.imagery")) {
+    drewRaster = drawPlateCarreeRaster(
+      ctx,
+      width,
+      height,
+      view,
+      scene,
+      "bluemarble",
+      layerOpacity(layers, "base.imagery", 1),
+      redraw,
+    );
+  }
+
+  if (!drewRaster && layerVisible(layers, "base.dark_basemap")) {
     ctx.fillStyle = "#071012";
     ctx.fillRect(0, 0, width, height);
-    ctx.fillStyle = "#0d171a";
-    ctx.fillRect(0, height * 0.58, width, height * 0.42);
   }
-  drawProceduralBasemap(ctx, width, height, view, layers, domain);
-  drawSyntheticFeatures(ctx, width, height, layers);
-  drawContours(ctx, width, height, layers);
+
+  if (layerVisible(layers, "base.terrain") && !drewRaster) {
+    drawPlateCarreeRaster(ctx, width, height, view, scene, "naturalearth", layerOpacity(layers, "base.terrain", 0.72), redraw);
+  }
+
+  if (layerVisible(layers, "base.admin_boundaries")) {
+    drawPlateCarreeRaster(ctx, width, height, view, scene, "political", layerOpacity(layers, "base.admin_boundaries", 0.42), redraw);
+  }
 
   if (layerVisible(layers, "base.coastline")) {
-    ctx.save();
-    ctx.globalAlpha = layerOpacity(layers, "base.coastline", 0.55);
-    ctx.strokeStyle = "#5d756f";
-    ctx.lineWidth = 1;
-    const coastlines = [
-      [[0.12, 0.2], [0.22, 0.28], [0.28, 0.42], [0.2, 0.58], [0.31, 0.77]],
-      [[0.68, 0.18], [0.76, 0.34], [0.72, 0.51], [0.83, 0.67], [0.78, 0.86]],
-      [[0.42, 0.12], [0.5, 0.22], [0.54, 0.38], [0.48, 0.55], [0.58, 0.76]],
-    ];
-    for (const line of coastlines) {
-      ctx.beginPath();
-      line.forEach(([x, y], index) => {
-        const px = x * width;
-        const py = y * height;
-        if (index === 0) ctx.moveTo(px, py);
-        else ctx.lineTo(px, py);
-      });
-      ctx.stroke();
-    }
-    ctx.restore();
+    drawVectorLayer(ctx, project, scene, "coastline", {
+      color: "#d6e6de",
+      opacity: layerOpacity(layers, "base.coastline", 0.55),
+      width: 0.9,
+      simplify: 0.015,
+    }, redraw);
+  }
+
+  if (layerVisible(layers, "base.admin_boundaries")) {
+    drawVectorLayer(ctx, project, scene, "pol", {
+      color: "#cfd9d6",
+      opacity: layerOpacity(layers, "base.admin_boundaries", 0.42),
+      width: 0.8,
+      dash: [5, 4],
+      simplify: 0.03,
+    }, redraw);
+    drawVectorLayer(ctx, project, scene, "us", {
+      color: "#f0d58a",
+      opacity: layerOpacity(layers, "base.admin_boundaries", 0.38),
+      width: 0.8,
+      dash: [4, 4],
+      simplify: 0.005,
+    }, redraw);
   }
 
   if (layerVisible(layers, "base.latlon_grid")) {
@@ -713,8 +803,16 @@ function draw2D(canvas, scene, frame, options) {
     lon: view.min_lon + (x / width) * lonSpan,
   });
   const byId = new Map(entities.map((entity) => [entity.id, entity]));
+  const redrawBasemap = () => {
+    if (!canvas.isConnected || canvas._afsimRedrawPending) return;
+    canvas._afsimRedrawPending = true;
+    requestAnimationFrame(() => {
+      canvas._afsimRedrawPending = false;
+      if (canvas.isConnected) draw2D(canvas, scene, frame, options);
+    });
+  };
 
-  drawGrid(ctx, width, height, view, layers, options.domain || "earth");
+  drawGrid(ctx, width, height, view, layers, options.domain || "earth", scene, redrawBasemap);
   if (options.mode === "25d") {
     ctx.save();
     ctx.globalAlpha = 0.22;
@@ -974,6 +1072,7 @@ function render3D(container, scene, frame, options) {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.setSize(width, height);
   renderer.setClearColor(0x05080a, 1);
+  if (THREE.SRGBColorSpace) renderer.outputColorSpace = THREE.SRGBColorSpace;
   container.appendChild(renderer.domElement);
   globeState.renderer = renderer;
 
@@ -991,6 +1090,17 @@ function render3D(container, scene, frame, options) {
     shininess: 10,
     specular: 0x44616a,
   });
+  const globeTextureUrl = scene.map_resources?.globe_texture?.url || "/api/afsim/maps/bluemarble/texture.jpg?z=3";
+  if (layerVisible(layers, "base.imagery") && globeTextureUrl) {
+    const texture = new THREE.TextureLoader().load(globeTextureUrl, () => {
+      earthMaterial.needsUpdate = true;
+    });
+    if (THREE.SRGBColorSpace) texture.colorSpace = THREE.SRGBColorSpace;
+    texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    earthMaterial.map = texture;
+    earthMaterial.color.set(0xffffff);
+    globeState.textures.push(texture);
+  }
   globeState.geometries.push(earthGeometry);
   globeState.materials.push(earthMaterial);
   group.add(new THREE.Mesh(earthGeometry, earthMaterial));
