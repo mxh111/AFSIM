@@ -42,6 +42,7 @@ from app.services.afsim_workbench import (
     latest_replay,
     list_scene_drafts,
     load_layer_catalog,
+    replay_for_run,
     restore_scene_draft,
     save_layer_state,
     save_scene_draft,
@@ -237,6 +238,16 @@ async def afsim_latest_replay(user: User = Depends(current_user)) -> dict[str, o
     if not user.can("read:report"):
         raise HTTPException(status_code=403, detail="permission denied")
     return latest_replay()
+
+
+@app.get("/api/afsim/replay/{run_id}")
+async def afsim_run_replay(run_id: str, user: User = Depends(current_user)) -> dict[str, object]:
+    if not user.can("read:report"):
+        raise HTTPException(status_code=403, detail="permission denied")
+    try:
+        return replay_for_run(run_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.get("/api/afsim/drafts")

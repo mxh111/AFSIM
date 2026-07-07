@@ -12,7 +12,8 @@ from typing import Any
 from app.core.config import PROJECT_ROOT
 from app.services.afsim_design import read_generated_scenario
 from app.services.afsim_parser import parse_demo_scenario, parse_scenario_file
-from app.services.afsim_runner import list_runs
+from app.services.afsim_replay import build_latest_replay, build_run_replay
+from app.services.afsim_runner import afsim_paths, list_runs
 
 
 WORKBENCH_ROOT = PROJECT_ROOT / "runtime" / "workbench"
@@ -34,9 +35,16 @@ LAYER_GROUPS: list[dict[str, str]] = [
 _GROUP_LABELS = {item["id"]: item["label"] for item in LAYER_GROUPS}
 
 _LAYER_CATALOG: list[dict[str, Any]] = [
+    {"id": "base.imagery", "name": "离线影像/Blue Marble", "group": "base", "visible": True, "opacity": 0.34},
     {"id": "base.dark_basemap", "name": "深色作战底图", "group": "base", "visible": True, "opacity": 1.0},
     {"id": "base.latlon_grid", "name": "经纬网", "group": "base", "visible": True, "opacity": 0.9},
     {"id": "base.coastline", "name": "海岸线/陆海轮廓", "group": "base", "visible": True, "opacity": 0.55},
+    {"id": "base.roads", "name": "道路/机动通道", "group": "base", "visible": False, "opacity": 0.44},
+    {"id": "base.water", "name": "水系/河流湖泊", "group": "base", "visible": True, "opacity": 0.42},
+    {"id": "base.cities", "name": "城市/居民地", "group": "base", "visible": False, "opacity": 0.5},
+    {"id": "base.admin_boundaries", "name": "行政边界", "group": "base", "visible": False, "opacity": 0.42},
+    {"id": "base.vegetation", "name": "植被/农田", "group": "base", "visible": False, "opacity": 0.36},
+    {"id": "base.contours", "name": "等高线", "group": "base", "visible": True, "opacity": 0.38},
     {"id": "base.bathymetry", "name": "海深等值线", "group": "base", "visible": False, "opacity": 0.45},
     {"id": "base.terrain", "name": "地形阴影", "group": "base", "visible": False, "opacity": 0.45},
     {"id": "base.airspace_boundaries", "name": "空域边界", "group": "base", "visible": True, "opacity": 0.5},
@@ -49,11 +57,18 @@ _LAYER_CATALOG: list[dict[str, Any]] = [
     {"id": "dynamic.live_tracks", "name": "实时航迹", "group": "dynamic", "visible": True, "opacity": 0.95},
     {"id": "dynamic.history_tracks", "name": "历史轨迹", "group": "dynamic", "visible": True, "opacity": 0.65},
     {"id": "dynamic.predicted_tracks", "name": "预测轨迹", "group": "dynamic", "visible": True, "opacity": 0.48},
+    {"id": "dynamic.missile_tracks", "name": "导弹弹道", "group": "dynamic", "visible": True, "opacity": 0.72},
+    {"id": "dynamic.engagement_events", "name": "交战事件", "group": "dynamic", "visible": True, "opacity": 0.8},
+    {"id": "dynamic.alert_zones", "name": "警戒区", "group": "dynamic", "visible": False, "opacity": 0.32},
+    {"id": "dynamic.strike_ranges", "name": "打击范围", "group": "dynamic", "visible": True, "opacity": 0.24},
     {"id": "dynamic.target_labels", "name": "目标标牌", "group": "dynamic", "visible": True, "opacity": 1.0},
     {"id": "dynamic.velocity_vectors", "name": "速度/航向矢量", "group": "dynamic", "visible": True, "opacity": 0.8},
     {"id": "dynamic.batch_groups", "name": "批次编组", "group": "dynamic", "visible": False, "opacity": 0.55},
     {"id": "environment.weather", "name": "天气影响区", "group": "environment", "visible": False, "opacity": 0.42},
     {"id": "environment.clouds", "name": "云层遮蔽", "group": "environment", "visible": False, "opacity": 0.35},
+    {"id": "environment.fog", "name": "雾/能见度", "group": "environment", "visible": False, "opacity": 0.35},
+    {"id": "environment.rain", "name": "降雨", "group": "environment", "visible": False, "opacity": 0.38},
+    {"id": "environment.snow", "name": "降雪/积雪", "group": "environment", "visible": False, "opacity": 0.34},
     {"id": "environment.wind", "name": "高空风场", "group": "environment", "visible": False, "opacity": 0.4},
     {"id": "environment.ocean_state", "name": "海况", "group": "environment", "visible": False, "opacity": 0.38},
     {"id": "environment.terrain_mask", "name": "地形遮蔽", "group": "environment", "visible": False, "opacity": 0.44},
@@ -73,6 +88,8 @@ _LAYER_CATALOG: list[dict[str, Any]] = [
     {"id": "replay.lost_track", "name": "丢失/中断事件", "group": "replay", "visible": True, "opacity": 0.9},
     {"id": "replay.intercepts", "name": "拦截事件", "group": "replay", "visible": True, "opacity": 0.9},
     {"id": "replay.chain_graph", "name": "链路图", "group": "replay", "visible": True, "opacity": 0.75},
+    {"id": "replay.air_defense_chain", "name": "防空链", "group": "replay", "visible": True, "opacity": 0.72},
+    {"id": "replay.data_gaps", "name": "数据缺口", "group": "replay", "visible": True, "opacity": 0.68},
     {"id": "replay.semantic_events", "name": "语义事件", "group": "replay", "visible": True, "opacity": 0.9},
 ]
 
@@ -104,6 +121,8 @@ def default_layer_catalog() -> list[dict[str, Any]]:
     for order, layer in enumerate(layers):
         layer.setdefault("locked", False)
         layer.setdefault("queryable", True)
+        layer.setdefault("focusable", True)
+        layer.setdefault("exportable", True)
         layer["order"] = order
         layer["group_label"] = _GROUP_LABELS.get(str(layer["group"]), str(layer["group"]))
     return layers
@@ -119,13 +138,15 @@ def load_layer_catalog() -> list[dict[str, Any]]:
         layer_state = saved.get(layer["id"], {})
         if not isinstance(layer_state, dict):
             continue
-        for key in ("visible", "opacity", "locked", "queryable"):
+        for key in ("visible", "opacity", "locked", "queryable", "focusable", "exportable"):
             if key in layer_state:
                 layer[key] = layer_state[key]
         layer["opacity"] = max(0.0, min(1.0, float(layer.get("opacity", 1.0))))
         layer["visible"] = bool(layer.get("visible", True))
         layer["locked"] = bool(layer.get("locked", False))
         layer["queryable"] = bool(layer.get("queryable", True))
+        layer["focusable"] = bool(layer.get("focusable", True))
+        layer["exportable"] = bool(layer.get("exportable", True))
     return layers
 
 
@@ -144,35 +165,43 @@ def save_layer_state(payload: dict[str, Any]) -> dict[str, Any]:
             "opacity": max(0.0, min(1.0, float(item.get("opacity", 1.0)))),
             "locked": bool(item.get("locked", False)),
             "queryable": bool(item.get("queryable", True)),
+            "focusable": bool(item.get("focusable", True)),
+            "exportable": bool(item.get("exportable", True)),
         }
     _write_json(LAYER_STATE_PATH, {"updated_at": time.time(), "layers": saved})
     return {"groups": LAYER_GROUPS, "layers": load_layer_catalog(), "path": str(LAYER_STATE_PATH)}
 
 
-def _route_points(platform: dict[str, Any]) -> list[dict[str, float]]:
+def _route_points(platform: dict[str, Any]) -> list[dict[str, Any]]:
     points = platform.get("positions") or []
     route = []
     for point in points:
         if point.get("lat") is None or point.get("lon") is None:
             continue
-        route.append(
-            {
-                "lat": float(point.get("lat", 0.0)),
-                "lon": float(point.get("lon", 0.0)),
-                "alt_m": float(point.get("alt_m", 0.0)),
-            }
-        )
+        route_point: dict[str, Any] = {
+            "lat": float(point.get("lat", 0.0)),
+            "lon": float(point.get("lon", 0.0)),
+            "alt_m": float(point.get("alt_m", 0.0)),
+            "waypoint_index": int(point.get("waypoint_index") or len(route) + 1),
+        }
+        for key in ("heading_deg", "speed_kts", "source_ref", "altitude_ref", "speed_ref", "heading_ref"):
+            if key in point:
+                route_point[key] = point[key]
+        route.append(route_point)
     if route:
         return route
     position = platform.get("position")
     if isinstance(position, dict) and position.get("lat") is not None and position.get("lon") is not None:
-        return [
-            {
-                "lat": float(position.get("lat", 0.0)),
-                "lon": float(position.get("lon", 0.0)),
-                "alt_m": float(position.get("alt_m", 0.0)),
-            }
-        ]
+        route_point = {
+            "lat": float(position.get("lat", 0.0)),
+            "lon": float(position.get("lon", 0.0)),
+            "alt_m": float(position.get("alt_m", 0.0)),
+            "waypoint_index": 1,
+        }
+        for key in ("heading_deg", "speed_kts", "source_ref", "altitude_ref", "speed_ref", "heading_ref"):
+            if key in position:
+                route_point[key] = position[key]
+        return [route_point]
     return []
 
 
@@ -194,6 +223,8 @@ def _kind_for(platform: dict[str, Any]) -> str:
         return "satellite"
     if "missile" in text or "weapon" in text:
         return "missile"
+    if "sub" in text or "submarine" in text:
+        return "submarine"
     if "ship" in text or "naval" in text or "surface" in text:
         return "ship"
     if "radar" in text:
@@ -202,7 +233,9 @@ def _kind_for(platform: dict[str, Any]) -> str:
         return "jammer"
     if "c2" in text or "command" in text or "指控" in text:
         return "c2"
-    if "sam" in text or "site" in text or "ground" in text or "base" in text:
+    if "tank" in text or "armor" in text or "armour" in text:
+        return "ground"
+    if "sam" in text or "air_defense" in text or "air-defense" in text or "site" in text or "ground" in text or "base" in text:
         return "ground"
     return "aircraft"
 
@@ -214,6 +247,8 @@ def _symbol_for(kind: str, category: str) -> str:
         return "missile"
     if kind == "ship":
         return "surface-ship"
+    if kind == "submarine":
+        return "submarine"
     if kind == "radar":
         return "radar"
     if kind == "jammer":
@@ -266,6 +301,19 @@ def _bearing_deg(a: dict[str, Any], b: dict[str, Any]) -> float:
     return round((math.degrees(math.atan2(y, x)) + 360.0) % 360.0, 1)
 
 
+def _merge_bounds(a: dict[str, float] | None, b: dict[str, float] | None) -> dict[str, float] | None:
+    if not a:
+        return b
+    if not b:
+        return a
+    return {
+        "min_lat": min(float(a["min_lat"]), float(b["min_lat"])),
+        "max_lat": max(float(a["max_lat"]), float(b["max_lat"])),
+        "min_lon": min(float(a["min_lon"]), float(b["min_lon"])),
+        "max_lon": max(float(a["max_lon"]), float(b["max_lon"])),
+    }
+
+
 def _platforms_from_parsed(parsed: dict[str, Any]) -> list[dict[str, Any]]:
     platforms: list[dict[str, Any]] = []
     for index, item in enumerate(parsed.get("platforms", []), start=1):
@@ -275,10 +323,11 @@ def _platforms_from_parsed(parsed: dict[str, Any]) -> list[dict[str, Any]]:
         position = route[0]
         category = str(item.get("category") or item.get("icon") or item.get("type") or "")
         kind = _kind_for(item)
-        heading = _heading_deg(route[0], route[-1]) if len(route) > 1 else 0.0
-        speed_kts = _speed_for(kind, category)
+        heading = float(route[0].get("heading_deg") if route[0].get("heading_deg") is not None else (_heading_deg(route[0], route[-1]) if len(route) > 1 else 0.0))
+        speed_kts = float(route[0].get("speed_kts") if route[0].get("speed_kts") is not None else _speed_for(kind, category))
         side = str(item.get("side") or "neutral").lower()
         platform_id = str(item.get("id") or f"platform_{index}")
+        source_ref = item.get("source_ref") or {"file": item.get("source", ""), "line": None}
         platforms.append(
             {
                 "id": platform_id,
@@ -298,14 +347,41 @@ def _platforms_from_parsed(parsed: dict[str, Any]) -> list[dict[str, Any]]:
                 "speed_mps": round(speed_kts * 0.514444, 1),
                 "heading_deg": heading,
                 "route": route,
+                "route_metadata": item.get("route_metadata", {}),
+                "commander": item.get("commander"),
+                "groups": item.get("groups", []),
                 "history_route": route[:1],
                 "predicted_route": route[1:] if len(route) > 1 else [],
                 "sensor_ids": [],
                 "weapon_ids": [],
+                "processor_ids": [str(proc.get("name")) for proc in item.get("processors", []) if proc.get("name")],
+                "communication_ids": [str(comm.get("name")) for comm in item.get("communications", []) if comm.get("name")],
+                "afsim": {
+                    "source_ref": source_ref,
+                    "platform_type": item.get("type", ""),
+                    "platform_type_ref": item.get("platform_type_ref"),
+                    "platform_type_base": item.get("platform_type_base", ""),
+                    "commander": item.get("commander"),
+                    "commander_ref": item.get("commander_ref"),
+                    "groups": item.get("groups", []),
+                    "route_metadata": item.get("route_metadata", {}),
+                    "end_ref": item.get("end_ref"),
+                    "fields": item.get("afsim_fields", [])[:120],
+                    "sensors": item.get("sensors", []),
+                    "weapons": item.get("weapons", []),
+                    "processors": item.get("processors", []),
+                    "communications": item.get("communications", []),
+                },
                 "metadata": {
                     "source": item.get("source", ""),
+                    "source_ref": source_ref,
+                    "commander": item.get("commander") or "",
                     "icon": item.get("icon", ""),
                     "positions": len(route),
+                    "sensor_count": len(item.get("sensors", [])),
+                    "weapon_count": len(item.get("weapons", [])),
+                    "processor_count": len(item.get("processors", [])),
+                    "communication_count": len(item.get("communications", [])),
                 },
             }
         )
@@ -354,9 +430,102 @@ def _sensor_range(platform: dict[str, Any]) -> float:
     return 0.0
 
 
+def _sensor_range_from_text(text: str, platform: dict[str, Any]) -> float:
+    lower = text.lower()
+    if "space" in lower or "sat" in lower:
+        return 1800.0
+    if "awacs" in lower:
+        return 550.0
+    if "radar" in lower:
+        return 320.0
+    if "esm" in lower or "elint" in lower:
+        return 420.0
+    if "geo" in lower or "optical" in lower or "ir" in lower:
+        return 160.0
+    if "acoustic" in lower or "sonar" in lower:
+        return 75.0
+    return _sensor_range(platform) or 120.0
+
+
+def _attachment_range_km(attachment: dict[str, Any], platform: dict[str, Any]) -> float:
+    value = attachment.get("range_km")
+    if value is not None:
+        try:
+            parsed = float(value)
+            if parsed > 0:
+                return parsed
+        except (TypeError, ValueError):
+            pass
+    return _sensor_range_from_text(f"{attachment.get('name', '')} {attachment.get('type', '')}", platform)
+
+
+def _attachment_beam_width(attachment: dict[str, Any], fallback: float) -> float:
+    if attachment.get("beam_width_deg") is not None:
+        try:
+            return max(1.0, min(360.0, float(attachment["beam_width_deg"])))
+        except (TypeError, ValueError):
+            return fallback
+    limits = attachment.get("azimuth_limits_deg")
+    if isinstance(limits, list) and len(limits) == 2:
+        try:
+            return max(1.0, min(360.0, abs(float(limits[1]) - float(limits[0]))))
+        except (TypeError, ValueError):
+            return fallback
+    return fallback
+
+
+def _sensor_type_from_text(text: str, platform: dict[str, Any]) -> str:
+    lower = text.lower()
+    if "esm" in lower or "elint" in lower:
+        return "esm_sensor"
+    if "acoustic" in lower:
+        return "acoustic_sensor"
+    if "sonar" in lower:
+        return "sonar"
+    if "geo" in lower or "optical" in lower or "ir" in lower:
+        return "geometric_sensor"
+    if platform["kind"] == "satellite":
+        return "space_sensor"
+    return "radar"
+
+
 def _sensors_from_platforms(platforms: list[dict[str, Any]]) -> list[dict[str, Any]]:
     sensors: list[dict[str, Any]] = []
     for platform in platforms:
+        explicit = platform.get("afsim", {}).get("sensors", [])
+        for index, attachment in enumerate(explicit, start=1):
+            text = f"{attachment.get('name', '')} {attachment.get('type', '')}"
+            sensor_type = _sensor_type_from_text(text, platform)
+            range_km = _attachment_range_km(attachment, platform)
+            default_beam = 80 if sensor_type in {"esm_sensor", "geometric_sensor"} else 360
+            beam_width = _attachment_beam_width(attachment, default_beam)
+            sensor = {
+                "id": f"sen_{platform['id']}_{_safe_name(str(attachment.get('name') or index))}",
+                "platform_id": platform["id"],
+                "name": str(attachment.get("name") or f"{platform['name']} sensor {index}"),
+                "side": platform["side"],
+                "type": sensor_type,
+                "enabled": bool(attachment.get("enabled", True)),
+                "range_km": range_km,
+                "azimuth_deg": platform.get("heading_deg", 0.0),
+                "beam_width_deg": beam_width,
+                "position": platform["position"],
+                "source_ref": attachment.get("source_ref"),
+                "afsim_type": attachment.get("type", ""),
+                "min_range_km": attachment.get("min_range_km", 0.0),
+                "azimuth_limits_deg": attachment.get("azimuth_limits_deg"),
+                "elevation_limits_deg": attachment.get("elevation_limits_deg"),
+                "frequency_mhz": attachment.get("frequency_mhz"),
+                "power_kw": attachment.get("power_kw"),
+                "inherited": bool(attachment.get("inherited", False)),
+                "layer_id": "electromagnetic.radar_ranges",
+            }
+            if sensor_type == "jammer":
+                sensor["layer_id"] = "electromagnetic.jamming_zones"
+            platform["sensor_ids"].append(sensor["id"])
+            sensors.append(sensor)
+        if explicit:
+            continue
         range_km = _sensor_range(platform)
         if range_km <= 0:
             continue
@@ -384,6 +553,43 @@ def _sensors_from_platforms(platforms: list[dict[str, Any]]) -> list[dict[str, A
 def _weapons_from_platforms(platforms: list[dict[str, Any]]) -> list[dict[str, Any]]:
     weapons: list[dict[str, Any]] = []
     for platform in platforms:
+        explicit = platform.get("afsim", {}).get("weapons", [])
+        for index, attachment in enumerate(explicit, start=1):
+            text = f"{attachment.get('name', '')} {attachment.get('type', '')}".lower()
+            if "jam" in text:
+                weapon_type, name, range_km, layer_id = "jammer", "电子压制/干扰载荷", 180.0, "electromagnetic.jamming_zones"
+            elif "sam" in text or "missile" in text:
+                weapon_type, name, range_km, layer_id = "missile", "导弹/防空武器", 180.0, "dynamic.strike_ranges"
+            elif "gun" in text:
+                weapon_type, name, range_km, layer_id = "gun", "火炮/近防武器", 24.0, "dynamic.strike_ranges"
+            else:
+                weapon_type, name, range_km, layer_id = "weapon", "AFSIM 武器", 80.0, "dynamic.strike_ranges"
+            if attachment.get("range_km") is not None:
+                try:
+                    range_km = max(range_km, float(attachment["range_km"]))
+                except (TypeError, ValueError):
+                    pass
+            weapon = {
+                "id": f"wpn_{platform['id']}_{_safe_name(str(attachment.get('name') or index))}",
+                "platform_id": platform["id"],
+                "side": platform["side"],
+                "type": weapon_type,
+                "name": str(attachment.get("name") or name),
+                "range_km": range_km,
+                "ready": True,
+                "position": platform["position"],
+                "source_ref": attachment.get("source_ref"),
+                "afsim_type": attachment.get("type", ""),
+                "quantity": attachment.get("quantity"),
+                "azimuth_limits_deg": attachment.get("azimuth_limits_deg"),
+                "elevation_limits_deg": attachment.get("elevation_limits_deg"),
+                "inherited": bool(attachment.get("inherited", False)),
+                "layer_id": layer_id,
+            }
+            platform["weapon_ids"].append(weapon["id"])
+            weapons.append(weapon)
+        if explicit:
+            continue
         kind = platform["kind"]
         category = str(platform.get("category", "")).lower()
         spec: tuple[str, str, float] | None = None
@@ -452,6 +658,56 @@ def _detections(platforms: list[dict[str, Any]], sensors: list[dict[str, Any]]) 
 
 def _communications(platforms: list[dict[str, Any]]) -> list[dict[str, Any]]:
     links: list[dict[str, Any]] = []
+    by_id = {item["id"]: item for item in platforms}
+    for subordinate in platforms:
+        commander_id = subordinate.get("commander")
+        if not commander_id or commander_id not in by_id:
+            continue
+        commander = by_id[commander_id]
+        distance = _haversine_km(commander["position"], subordinate["position"])
+        links.append(
+            {
+                "id": f"cmd_{commander['id']}_{subordinate['id']}",
+                "source_id": commander["id"],
+                "target_id": subordinate["id"],
+                "side": subordinate["side"],
+                "range_km": round(distance, 2),
+                "status": "nominal" if distance < 900 else "degraded",
+                "band": "afsim_command_chain",
+                "chain_type": "command",
+                "source_ref": subordinate.get("afsim", {}).get("commander_ref"),
+                "layer_id": "electromagnetic.comm_links",
+                "layer_ids": ["electromagnetic.comm_links", "replay.chain_graph"],
+            }
+        )
+    explicit_nodes = [
+        item for item in platforms
+        if item.get("afsim", {}).get("communications")
+    ]
+    for controller in explicit_nodes:
+        for target in platforms:
+            if target["id"] == controller["id"] or target["side"] != controller["side"]:
+                continue
+            distance = _haversine_km(controller["position"], target["position"])
+            if distance > 900:
+                continue
+            links.append(
+                {
+                    "id": f"comm_explicit_{controller['id']}_{target['id']}",
+                    "source_id": controller["id"],
+                    "target_id": target["id"],
+                    "side": controller["side"],
+                    "range_km": round(distance, 2),
+                    "status": "nominal" if distance < 650 else "degraded",
+                    "band": "afsim_comm_transceiver",
+                    "chain_type": "communication",
+                    "source_ref": controller.get("afsim", {}).get("communications", [{}])[0].get("source_ref"),
+                    "layer_id": "electromagnetic.comm_links",
+                    "layer_ids": ["electromagnetic.comm_links", "replay.chain_graph"],
+                }
+            )
+            if len(links) >= 260:
+                return links
     control_kinds = {"c2", "radar", "ship"}
     controllers = [
         item
@@ -475,6 +731,8 @@ def _communications(platforms: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "status": "nominal" if distance < 650 else "degraded",
                     "band": "tactical_data_link",
                     "layer_id": "electromagnetic.comm_links",
+                    "chain_type": "communication",
+                    "layer_ids": ["electromagnetic.comm_links", "replay.chain_graph"],
                 }
             )
             if len(links) >= 260:
@@ -587,28 +845,14 @@ def _events_from_run(run: dict[str, Any], limit: int = 180) -> list[dict[str, An
 
 
 def latest_replay() -> dict[str, Any]:
-    runs = list_runs(1)
-    run = runs[0] if runs else None
-    events = _events_from_run(run) if run else []
-    return {
-        "run": run,
-        "events": events,
-        "semantic_events": [
-            {
-                "id": f"sem_{event['id']}",
-                "time": event["time"],
-                "summary": event["title"],
-                "detail": event["message"],
-                "event_id": event["id"],
-            }
-            for event in events[:80]
-        ],
-        "summary": {
-            "run_id": run.get("run_id") if run else None,
-            "event_count": len(events),
-            "source": "runtime/afsim_runs" if run else "none",
-        },
-    }
+    return build_latest_replay(list_runs(25))
+
+
+def replay_for_run(run_id: str) -> dict[str, Any]:
+    run = next((item for item in list_runs(200) if item.get("run_id") == run_id), None)
+    if not run:
+        raise FileNotFoundError(f"AFSIM run not found: {run_id}")
+    return build_run_replay(run)
 
 
 def _chain_graph(
@@ -643,10 +887,12 @@ def _chain_graph(
                 "id": f"chain_{comm['id']}",
                 "source": comm["source_id"],
                 "target": comm["target_id"],
-                "type": "communication",
+                "type": comm.get("chain_type") or "communication",
                 "status": comm["status"],
             }
         )
+    blue_nodes = [node["id"] for node in nodes if node["side"] == "blue"]
+    red_nodes = [node["id"] for node in nodes if node["side"] == "red"]
     return {
         "nodes": nodes,
         "links": links,
@@ -654,20 +900,38 @@ def _chain_graph(
             {
                 "id": "blue_observation_chain",
                 "name": "蓝方观测链",
-                "node_ids": [node["id"] for node in nodes if node["side"] == "blue"],
+                "node_ids": blue_nodes,
                 "link_type": "observation",
             },
             {
                 "id": "red_observation_chain",
                 "name": "红方观测链",
-                "node_ids": [node["id"] for node in nodes if node["side"] == "red"],
+                "node_ids": red_nodes,
                 "link_type": "observation",
+            },
+            {
+                "id": "command_chain",
+                "name": "指挥链",
+                "node_ids": [node["id"] for node in nodes if any(link.get("type") == "command" and node["id"] in {link.get("source"), link.get("target")} for link in links)],
+                "link_type": "command",
             },
             {
                 "id": "communication_chain",
                 "name": "通信链",
                 "node_ids": [node["id"] for node in nodes],
                 "link_type": "communication",
+            },
+            {
+                "id": "air_defense_chain",
+                "name": "防空链",
+                "node_ids": [node["id"] for node in nodes if node["kind"] in {"radar", "ground", "c2"}],
+                "link_type": "air_defense",
+            },
+            {
+                "id": "strike_chain",
+                "name": "打击链",
+                "node_ids": blue_nodes + red_nodes,
+                "link_type": "engagement",
             },
         ],
     }
@@ -701,6 +965,45 @@ def _load_parsed_scene(
     return parsed, source
 
 
+def _map_resource_manifest() -> dict[str, Any]:
+    paths = afsim_paths()
+    maps_root = paths.root / "resources" / "maps"
+    models_root = paths.root / "resources" / "models"
+    return {
+        "source": "local_afsim_resources",
+        "readonly": True,
+        "maps_root": str(maps_root),
+        "models_root": str(models_root),
+        "offline_maps": [
+            {"id": "bluemarble", "name": "Blue Marble", "kind": "mbtiles", "exists": (maps_root / "bluemarble_db" / "bmng.mbtiles").exists()},
+            {"id": "naturalearth", "name": "Natural Earth", "kind": "mbtiles", "exists": (maps_root / "naturalearth_db" / "natural.mbtiles").exists()},
+            {"id": "political", "name": "Political Borders", "kind": "mbtiles", "exists": (maps_root / "political_db" / "border.mbtiles").exists()},
+            {"id": "coastline", "name": "NE 50m Coastline", "kind": "shapefile", "exists": (maps_root / "layers" / "ne_50m_coastline.shp").exists()},
+        ],
+        "model_catalog": {
+            "milstd_mapping": str(models_root / "milStdIconMappings.csv"),
+            "simple_models": str(models_root / "simple"),
+            "three_d_models": str(models_root / "3d"),
+            "note": "OSGB/native AFSIM models are referenced only; browser renderer uses Three.js simplified geometry in this phase.",
+        },
+    }
+
+
+def _environment_state(bounds: dict[str, float] | None) -> dict[str, Any]:
+    center_lat = (float(bounds["min_lat"]) + float(bounds["max_lat"])) / 2 if bounds else 0.0
+    terrain = "ocean" if abs(center_lat) < 8 else "desert" if abs(center_lat) < 28 else "forest" if abs(center_lat) < 55 else "snow"
+    return {
+        "schema_version": "afsim-environment.v1",
+        "terrain_palette": ["ocean", "forest", "gobi", "desert", "city", "farmland", "hills", "mountain", "mud", "snow", "grass"],
+        "dominant_terrain": terrain,
+        "weather_timeline": [
+            {"time": 0.0, "weather": "clear", "visibility_km": 80, "wind_dir_deg": 270, "wind_kts": 18},
+            {"time": 120.0, "weather": "cloud", "visibility_km": 55, "wind_dir_deg": 285, "wind_kts": 22},
+            {"time": 300.0, "weather": "fog", "visibility_km": 18, "wind_dir_deg": 300, "wind_kts": 16},
+        ],
+    }
+
+
 def build_workbench_state(
     scenario_id: str | None = None,
     demo_name: str = "simple_scenario",
@@ -715,12 +1018,16 @@ def build_workbench_state(
     detections = _detections(platforms, sensors)
     communications = _communications(platforms)
     replay = latest_replay()
+    tracks.extend(replay.get("tracks", [])[:200])
     scene_events = _scene_events(platforms, detections)
     events = sorted(scene_events + replay["events"][:80], key=lambda item: float(item.get("time", 0.0)))
+    timeline = replay.get("summary", {}).get("timeline", {}) if isinstance(replay.get("summary"), dict) else {}
+    replay_end = float(timeline.get("end") or 0.0)
+    merged_bounds = _merge_bounds(parsed.get("bounds"), replay.get("bounds"))
     return {
         "schema_version": "afsim-workbench.v1",
         "source": source,
-        "bounds": parsed.get("bounds"),
+        "bounds": merged_bounds,
         "platforms": platforms,
         "tracks": tracks,
         "sensors": sensors,
@@ -730,10 +1037,16 @@ def build_workbench_state(
         "events": events,
         "layers": layers,
         "layer_groups": LAYER_GROUPS,
+        "map_resources": _map_resource_manifest(),
+        "environment": _environment_state(merged_bounds),
+        "afsim_definitions": {
+            **(parsed.get("definitions", {}) if isinstance(parsed.get("definitions"), dict) else {}),
+            "platform_types": parsed.get("platform_types", {}),
+        },
         "simulation_time": {
             "current": 0.0,
             "start": 0.0,
-            "end": 600.0,
+            "end": max(600.0, replay_end),
             "speed_factor": 1.0,
             "running": False,
             "frame_id": 0,
@@ -748,14 +1061,41 @@ def build_workbench_state(
         "chain_graph": _chain_graph(platforms, detections, communications),
         "geojson": parsed.get("geojson") or {"type": "FeatureCollection", "features": []},
         "limits": {"max_batches": 200, "min_targets_per_batch": 4},
+        "editing_workflow": {
+            "patch_strategy": "controlled_json_patch",
+            "draft_path": str(DRAFT_ROOT),
+            "audit_path": str(AUDIT_PATH),
+            "raw_afsim_write": False,
+            "supported_operations": [
+                "add_platform",
+                "delete_platform",
+                "replace_platform_position",
+                "replace_route_waypoint",
+                "edit_sensor_zone",
+                "edit_comm_coverage",
+                "edit_alert_zone",
+                "edit_layer_property",
+            ],
+        },
+        "performance_design": {
+            "target_refresh_hz": 5,
+            "dynamic_3d_targets": 200,
+            "dynamic_2d_targets": 300,
+            "query_modes": ["point_pick", "rectangle", "polygon_export_contract"],
+        },
         "capabilities": [
             "2d_map",
+            "2_5d_map",
             "3d_globe",
             "split_view",
             "layer_persistence",
             "scenario_drafts",
             "timeline_replay",
             "local_afsim_authority",
+            "map_pan_zoom",
+            "distance_bearing_measure",
+            "rectangle_query",
+            "controlled_scene_patch",
         ],
         "stats": {
             "platform_count": len(platforms),

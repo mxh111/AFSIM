@@ -1,0 +1,77 @@
+# AFSIM Web Map Workbench
+
+## 启动
+
+```powershell
+cd D:\AFISM\AFSIM\AFSIM_LLM
+.\scripts\run_dev.ps1 -SkipInstall
+```
+
+访问 `http://127.0.0.1:8766`。二开代码只写入本项目的 `runtime/`、`generated_scenarios/` 和 `app/static/`，不修改 AFSIM 原始安装目录。
+
+## 地图资源配置
+
+工作台通过 `/api/afsim/workbench` 返回 `map_resources`，只读引用本机 AFSIM 资源：
+
+- `resources/maps/bluemarble_db/bmng.mbtiles`：Blue Marble 离线影像线索。
+- `resources/maps/naturalearth_db/natural.mbtiles`：Natural Earth 离线底图线索。
+- `resources/maps/political_db/border.mbtiles`：政治边界线索。
+- `resources/maps/layers/ne_50m_coastline.shp`：海岸线线索。
+- `resources/models/milStdIconMappings.csv` 和 `resources/models/3d`：符号和模型来源线索。
+
+当前浏览器端不直接读取大型 MBTiles/OSGB 文件，而是用本地程序化深色底图、地貌纹理、等高线、水系、道路、城市点和 Three.js 简化模型复刻 Warlock 风格。后续可在 `app/static/assets/` 放入转换后的轻量瓦片、GeoJSON、glTF 或 sprites。
+
+## AFSIM 字段映射
+
+`app/services/afsim_parser.py` 递归读取 `include/include_once`，解析并保留原始文件和行号：
+
+- `platform NAME TYPE` -> `platforms[].id/type/afsim.source_ref`
+- `platform_type NAME BASE` -> `afsim_definitions.platform_types[NAME]`，并继承到同类型平台。
+- `side` -> `platforms[].side`
+- `commander` / `group_join` -> `platforms[].commander/groups` 和 `communications[].chain_type=command`
+- `icon/category` -> `platforms[].category/symbol`
+- `route/label/goto/position/altitude/heading/speed` -> `route[].lat/lon/alt_m/heading_deg/speed_kts` 和 `route_metadata.labels/gotos`
+- `sensor/weapon/processor/task_processor/comm/edit ...` -> `platforms[].afsim.sensors/weapons/processors/communications`
+- `maximum_range/one_m2_detect_range/azimuth_*_limits/elevation_*_limits/power/frequency/quantity` -> `sensors/weapons` 的 range、FOV、功率、频率、数量字段。
+
+include 解析会同时尝试当前文件目录和想定根目录，覆盖 wargame 这类按 demo 根目录组织 `platforms/include.txt` 的场景。
+
+前端目标属性面板展示源文件和行号，便于从网页对象追溯到 AFSIM 场景文本。
+
+## 图层配置
+
+图层目录由 `app/services/afsim_workbench.py` 维护，状态持久化到 `runtime/workbench/layer_state.json`。图层支持：
+
+- 显隐、透明度、锁定、查询。
+- 聚焦：前端记录当前聚焦图层并强制该层可见。
+- 导出：导出当前图层关联的 platforms/tracks/sensors/weapons/detections/communications/events JSON。
+
+图层分组覆盖基础地理、军事部署、动态态势、电磁态势、复盘分析和环境保障，内置超过 50 个图层。
+
+## 符号体系
+
+2D 使用 Canvas 绘制 AFSIM/Warlock 风格深色战术符号：
+
+- 飞机、预警机、轰炸机、无人机、导弹、卫星、舰船、潜艇、地面目标、雷达、指挥中心、干扰源。
+- 红蓝中立颜色克制区分，目标支持方向、选中高亮、阵营/类型/高度/速度/航向标签。
+- 航迹支持历史线、预测线、航段方向箭头和航路点编号。
+
+3D 使用 Three.js 数字地球和简化几何模型表达平台类型；大型 AFSIM OSGB 模型只作为来源线索，未直接加载。
+
+## 地图交互和编辑
+
+- 2D/2.5D 地图支持滚轮缩放、鼠标拖拽平移、目标点选、矩形框选查询。
+- 3D 地球支持鼠标拖动旋转和滚轮缩放，平台简化模型按高度贴地/贴球显示。
+- “测量”模式在地图上点击两个点，输出距离和方位。
+- “编辑”模式点击地图写入选中目标的新坐标；“预览 patch”只更新当前浏览器态势和中间 JSON，不直接改 AFSIM 原始文件。
+- “保存草稿”把 `afsim-controlled-patch.v1` 操作写入 `runtime/workbench/drafts/*.json`，并记录审计日志。撤销/清空会回退预览状态。
+
+## 时间轴和复盘数据
+
+`/api/afsim/replay/latest` 优先选择最近的可生成 replay frame 的运行输出；指定 `/api/afsim/replay/{run_id}` 不回退。前端拖动时间轴时，在相邻 replay frames 之间线性插值平台经纬度、高度和航向，使目标位置连续变化。
+
+复盘数据结构包含 `events/frames/tracks/bounds/semantic_events/summary`。事件列表点击会跳转到对应时间并高亮相关目标。
+
+## 性能和验证约束
+
+`/api/afsim/workbench` 返回 `performance_design`，当前设计目标为 5Hz 刷新、200 个三维动态目标、300 个二维动态目标。前端渲染层保持 Canvas/Three.js 单次重绘，不在拖拽过程中写入原始 AFSIM 目录。

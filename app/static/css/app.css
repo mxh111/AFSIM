@@ -312,13 +312,28 @@ h2 {
 
 .layer-row {
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) 64px 25px 25px;
+  grid-template-columns: 22px minmax(0, 1fr) 64px 25px 25px 24px 24px;
   align-items: center;
   gap: 6px;
   min-height: 34px;
   padding: 5px 8px;
   color: var(--muted);
   font-size: 12px;
+}
+
+.layer-row.focused {
+  outline: 1px solid rgba(231, 184, 91, 0.72);
+  background: rgba(231, 184, 91, 0.08);
+}
+
+.layer-row button {
+  display: grid;
+  place-items: center;
+  min-width: 22px;
+  min-height: 22px;
+  padding: 0;
+  border-radius: 4px;
+  font-size: 13px;
 }
 
 .layer-row + .layer-row {
@@ -420,7 +435,7 @@ h2 {
 
 .map-actions {
   display: grid;
-  grid-template-columns: repeat(7, auto);
+  grid-template-columns: repeat(10, auto);
   gap: 6px;
 }
 
@@ -446,11 +461,13 @@ h2 {
 }
 
 .map-mode-2d,
+.map-mode-25d,
 .map-mode-3d {
   grid-template-columns: 1fr;
 }
 
 .map-mode-2d .map-pane-3d,
+.map-mode-25d .map-pane-3d,
 .map-mode-3d .map-pane-2d {
   display: none;
 }
@@ -473,6 +490,14 @@ h2 {
   height: 100%;
 }
 
+.afsim-map-canvas {
+  cursor: crosshair;
+}
+
+.afsim-map-canvas.dragging {
+  cursor: grabbing;
+}
+
 .map-hud {
   position: absolute;
   top: 10px;
@@ -492,6 +517,20 @@ h2 {
 
 .map-hud strong {
   color: var(--text);
+}
+
+.map-readout {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  max-width: calc(100% - 20px);
+  border: 1px solid rgba(97, 212, 207, 0.24);
+  border-radius: 4px;
+  background: rgba(8, 12, 14, 0.82);
+  color: #b8c7c7;
+  padding: 5px 8px;
+  font: 11px Consolas, monospace;
+  pointer-events: none;
 }
 
 .scene-empty {
@@ -565,6 +604,10 @@ h2 {
   background: #262b2f;
 }
 
+.table-row.multi-selected {
+  outline: 1px solid rgba(97, 212, 207, 0.46);
+}
+
 .list-item strong,
 .table-row strong {
   display: block;
@@ -618,6 +661,38 @@ h2 {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.target-edit-panel {
+  display: grid;
+  gap: 8px;
+}
+
+.edit-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.edit-grid label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.patch-preview {
+  min-height: 72px;
+  max-height: 180px;
+  margin: 0;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: #101214;
+  color: #b8c7c7;
+  padding: 8px;
+  font: 11px/1.45 Consolas, monospace;
+  white-space: pre-wrap;
 }
 
 .output {
