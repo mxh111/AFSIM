@@ -6,7 +6,10 @@ from app.services.afsim_design import generate_scenario, read_generated_scenario
 from app.services.afsim_parser import parse_demo_scenario
 from app.services.afsim_parser import parse_scenario_file
 from app.services.afsim_realtime import build_realtime_frame
+from app.services.afsim_replay import build_latest_replay, build_run_replay
 from app.services.afsim_runner import discover_demos, run_generated_scenario, status
+from app.services.afsim_workbench import build_workbench_state, default_layer_catalog
+from app.services.afsim_workbench import replay_for_run
 from app.services.simulation import SimulationEngine
 from app.services.storage import Storage
 
@@ -51,6 +54,17 @@ def test_afsim_scenario_parser_extracts_platforms():
     assert "route_count" in parsed
 
 
+def test_afsim_parser_keeps_warlock_style_semantics():
+    parsed = parse_demo_scenario("wargame", "single_player_scenario.txt")
+    assert parsed["platform_count"] >= 20
+    assert len(parsed["platform_types"]) >= 8
+    bravo = next(platform for platform in parsed["platforms"] if platform["id"] == "BravoBlue")
+    assert bravo["route_metadata"]["labels"][0]["name"] == "bravo_loiter"
+    assert bravo["route_metadata"]["gotos"][0]["target"] == "bravo_loiter"
+    assert bravo["sensors"]
+    assert bravo["weapons"]
+
+
 def test_afsim_realtime_frame_uses_parsed_routes():
     parsed = parse_demo_scenario("simple_scenario", "simple_scenario.txt")
     frame = build_realtime_frame(parsed, 12.5, frame_id=7, loop_seconds=60)
@@ -61,6 +75,116 @@ def test_afsim_realtime_frame_uses_parsed_routes():
     assert frame["entities"]
     first = frame["entities"][0]
     assert {"id", "side", "lat", "lon", "route"}.issubset(first)
+
+
+def test_afsim_workbench_layer_catalog_has_required_groups():
+    layers = default_layer_catalog()
+    groups = {layer["group"] for layer in layers}
+    assert len(layers) >= 30
+    assert {
+        "base",
+        "deployment",
+        "dynamic",
+        "environment",
+        "intelligence",
+        "electromagnetic",
+        "replay",
+    }.issubset(groups)
+    assert all({"id", "name", "visible", "opacity", "locked", "queryable"}.issubset(layer) for layer in layers)
+
+
+def test_afsim_workbench_state_contract_from_demo():
+    workbench = build_workbench_state(demo_name="simple_scenario", input_file="simple_scenario.txt")
+    required = {
+        "platforms",
+        "tracks",
+        "sensors",
+        "weapons",
+        "detections",
+        "communications",
+        "events",
+        "layers",
+        "simulation_time",
+    }
+    assert required.issubset(workbench)
+    assert workbench["schema_version"] == "afsim-workbench.v1"
+    assert workbench["platforms"]
+    assert len(workbench["layers"]) >= 30
+    assert workbench["stats"]["platform_count"] == len(workbench["platforms"])
+    assert "map_pan_zoom" in workbench["capabilities"]
+    assert "controlled_scene_patch" in workbench["capabilities"]
+    assert workbench["editing_workflow"]["raw_afsim_write"] is False
+
+
+def test_afsim_event_output_builds_replay_frames(tmp_path):
+    evt_path = tmp_path / "sample.evt"
+    evt_path.write_text(
+        "\n".join(
+            [
+                "0.00000 SENSOR_DETECTION_ATTEMPT radar_1 target_1 Sensor: radar_1 Mode: default Beam: 1 \\",
+                "  Rcvr: Type: TEST_RADAR LLA: 30:00:00.00n 120:00:00.00e 10 m Heading: 0 deg Pitch: 0 deg Roll: 0 deg Speed: 0 m/s \\",
+                "  Tgt: Type: TEST_TARGET LLA: 30:06:00.00n 120:06:00.00e 1000 m Heading: 45 deg Pitch: 0 deg Roll: 0 deg Speed: 250 m/s \\",
+                "  Rcvr->Tgt: Range: 14.7 km (7.9 nm) Brg: 40 deg El: 1 deg \\",
+                "  Pd: 0.9 RequiredPd: 0.5 Detected: 1",
+                "1.00000 SENSOR_DETECTION_ATTEMPT radar_1 target_1 Sensor: radar_1 Mode: default Beam: 1 \\",
+                "  Rcvr: Type: TEST_RADAR LLA: 30:00:00.00n 120:00:00.00e 10 m Heading: 0 deg Pitch: 0 deg Roll: 0 deg Speed: 0 m/s \\",
+                "  Tgt: Type: TEST_TARGET LLA: 30:07:00.00n 120:08:00.00e 1000 m Heading: 45 deg Pitch: 0 deg Roll: 0 deg Speed: 250 m/s \\",
+                "  Rcvr->Tgt: Range: 16.0 km (8.6 nm) Brg: 42 deg El: 1 deg \\",
+                "  Pd: 0.8 RequiredPd: 0.5 Detected: 1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    run = {
+        "run_id": "unit_replay",
+        "files": [{"name": evt_path.name, "path": str(evt_path), "size": evt_path.stat().st_size}],
+        "summary": {"tail": ["start 0", "complete 1.0"]},
+    }
+
+    replay = build_run_replay(run, max_events=10, max_frames=10, cache_dir=tmp_path / "cache")
+
+    assert replay["schema_version"] == "afsim-replay.v1"
+    assert replay["summary"]["event_count"] >= 2
+    assert replay["summary"]["frame_count"] >= 2
+    assert replay["events"][0]["type"] == "detected"
+    assert replay["events"][0]["detector_id"] == "radar_1"
+    assert replay["events"][0]["target_id"] == "target_1"
+    assert replay["frames"][0]["authoritative"] is True
+    assert any(entity["id"] == "target_1" for entity in replay["frames"][-1]["entities"])
+    assert replay["bounds"] is not None
+
+
+def test_latest_replay_prefers_recent_run_with_frames(tmp_path):
+    evt_path = tmp_path / "latest_sample.evt"
+    evt_path.write_text(
+        "\n".join(
+            [
+                "0.00000 SENSOR_DETECTION_ATTEMPT radar_1 target_1 Sensor: radar_1 Mode: default Beam: 1 \\",
+                "  Rcvr: Type: TEST_RADAR LLA: 30:00:00.00n 120:00:00.00e 10 m Heading: 0 deg Pitch: 0 deg Roll: 0 deg Speed: 0 m/s \\",
+                "  Tgt: Type: TEST_TARGET LLA: 30:06:00.00n 120:06:00.00e 1000 m Heading: 45 deg Pitch: 0 deg Roll: 0 deg Speed: 250 m/s \\",
+                "  Pd: 0.9 RequiredPd: 0.5 Detected: 1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    empty_run = {
+        "run_id": f"{tmp_path.name}_latest_no_frames",
+        "files": [],
+        "summary": {"tail": ["start 0", "complete 1.0"]},
+    }
+    framed_run = {
+        "run_id": f"{tmp_path.name}_older_with_frames",
+        "files": [{"name": evt_path.name, "path": str(evt_path), "size": evt_path.stat().st_size}],
+        "summary": {"tail": ["start 0", "complete 1.0"]},
+    }
+
+    replay = build_latest_replay([empty_run, framed_run])
+
+    assert replay["summary"]["run_id"] == framed_run["run_id"]
+    assert replay["summary"]["latest_run_id"] == empty_run["run_id"]
+    assert replay["summary"]["selected_run_index"] == 1
+    assert replay["summary"]["selection_policy"] == "latest_with_replay_frames"
+    assert replay["summary"]["frame_count"] >= 1
 
 
 def test_generated_afsim_design_runs_with_mission():
@@ -106,3 +230,6 @@ def test_generated_afsim_design_runs_with_mission():
     assert len(parsed["geojson"]["features"]) >= 4
     assert run["returncode"] == 0
     assert any(file["name"].endswith(".aer") for file in run["files"])
+    replay = replay_for_run(run["run_id"])
+    assert replay["summary"]["run_id"] == run["run_id"]
+    assert replay["schema_version"] == "afsim-replay.v1"
