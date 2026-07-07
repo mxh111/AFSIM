@@ -7,6 +7,7 @@ from app.services.afsim_parser import parse_demo_scenario
 from app.services.afsim_parser import parse_scenario_file
 from app.services.afsim_realtime import build_realtime_frame
 from app.services.afsim_runner import discover_demos, run_generated_scenario, status
+from app.services.afsim_workbench import build_workbench_state, default_layer_catalog
 from app.services.simulation import SimulationEngine
 from app.services.storage import Storage
 
@@ -61,6 +62,42 @@ def test_afsim_realtime_frame_uses_parsed_routes():
     assert frame["entities"]
     first = frame["entities"][0]
     assert {"id", "side", "lat", "lon", "route"}.issubset(first)
+
+
+def test_afsim_workbench_layer_catalog_has_required_groups():
+    layers = default_layer_catalog()
+    groups = {layer["group"] for layer in layers}
+    assert len(layers) >= 30
+    assert {
+        "base",
+        "deployment",
+        "dynamic",
+        "environment",
+        "intelligence",
+        "electromagnetic",
+        "replay",
+    }.issubset(groups)
+    assert all({"id", "name", "visible", "opacity", "locked", "queryable"}.issubset(layer) for layer in layers)
+
+
+def test_afsim_workbench_state_contract_from_demo():
+    workbench = build_workbench_state(demo_name="simple_scenario", input_file="simple_scenario.txt")
+    required = {
+        "platforms",
+        "tracks",
+        "sensors",
+        "weapons",
+        "detections",
+        "communications",
+        "events",
+        "layers",
+        "simulation_time",
+    }
+    assert required.issubset(workbench)
+    assert workbench["schema_version"] == "afsim-workbench.v1"
+    assert workbench["platforms"]
+    assert len(workbench["layers"]) >= 30
+    assert workbench["stats"]["platform_count"] == len(workbench["platforms"])
 
 
 def test_generated_afsim_design_runs_with_mission():

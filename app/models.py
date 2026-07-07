@@ -113,6 +113,18 @@ class AFSimAgentTickRequest(BaseModel):
     step_seconds: float = Field(default=5.0, ge=0.1, le=300.0)
 
 
+class AFSimLayerStateUpdate(BaseModel):
+    layers: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class AFSimDraftRequest(BaseModel):
+    name: str = Field(default="scene_draft", min_length=1, max_length=120)
+    source: str = Field(default="web", max_length=200)
+    author: str = Field(default="web", max_length=80)
+    scene: dict[str, Any] = Field(default_factory=dict)
+    operations: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class CommanderRequest(BaseModel):
     objective: str = Field(..., min_length=2, max_length=1200)
     side: Literal["blue", "red"] = "blue"

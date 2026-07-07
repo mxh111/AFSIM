@@ -11,7 +11,9 @@ from app.core.config import PROJECT_ROOT, settings
 from app.core.security import User, role_catalog, user_from_token
 from app.models import (
     AFSimAgentTickRequest,
+    AFSimDraftRequest,
     AFSimGeneratedRunRequest,
+    AFSimLayerStateUpdate,
     AFSimRunRequest,
     AFSimScenarioDesign,
     CommanderRequest,
@@ -34,6 +36,15 @@ from app.services.afsim_runner import (
     run_demo,
     run_generated_scenario,
     status as afsim_runner_status,
+)
+from app.services.afsim_workbench import (
+    build_workbench_state,
+    latest_replay,
+    list_scene_drafts,
+    load_layer_catalog,
+    restore_scene_draft,
+    save_layer_state,
+    save_scene_draft,
 )
 from app.services.llm import CommanderLLM
 from app.services.reports import build_report, write_markdown_report
@@ -185,6 +196,78 @@ async def afsim_runs(user: User = Depends(current_user)) -> list[dict[str, objec
     if not user.can("read:report"):
         raise HTTPException(status_code=403, detail="permission denied")
     return list_runs()
+
+
+@app.get("/api/afsim/workbench")
+async def afsim_workbench(
+    scenario_id: str | None = None,
+    demo_name: str = "simple_scenario",
+    input_file: str | None = None,
+    user: User = Depends(current_user),
+) -> dict[str, object]:
+    if not user.can("read:state"):
+        raise HTTPException(status_code=403, detail="permission denied")
+    try:
+        return build_workbench_state(scenario_id=scenario_id, demo_name=demo_name, input_file=input_file)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/afsim/layers")
+async def afsim_layers(user: User = Depends(current_user)) -> dict[str, object]:
+    if not user.can("read:state"):
+        raise HTTPException(status_code=403, detail="permission denied")
+    return {"layers": load_layer_catalog()}
+
+
+@app.post("/api/afsim/layers/state")
+async def afsim_layer_state(
+    payload: AFSimLayerStateUpdate,
+    user: User = Depends(current_user),
+) -> dict[str, object]:
+    if not user.can("edit:scenario"):
+        raise HTTPException(status_code=403, detail="permission denied")
+    result = save_layer_state(payload.model_dump())
+    storage.add_event("afsim.layers.updated", {"layer_count": len(result["layers"])})
+    return result
+
+
+@app.get("/api/afsim/replay/latest")
+async def afsim_latest_replay(user: User = Depends(current_user)) -> dict[str, object]:
+    if not user.can("read:report"):
+        raise HTTPException(status_code=403, detail="permission denied")
+    return latest_replay()
+
+
+@app.get("/api/afsim/drafts")
+async def afsim_drafts(user: User = Depends(current_user)) -> dict[str, object]:
+    if not user.can("read:state"):
+        raise HTTPException(status_code=403, detail="permission denied")
+    return list_scene_drafts()
+
+
+@app.post("/api/afsim/drafts")
+async def afsim_save_draft(
+    payload: AFSimDraftRequest,
+    user: User = Depends(current_user),
+) -> dict[str, object]:
+    if not user.can("edit:scenario"):
+        raise HTTPException(status_code=403, detail="permission denied")
+    result = save_scene_draft(payload.model_dump())
+    storage.add_event("afsim.draft.saved", {"draft_id": result["draft_id"], "path": result["path"]})
+    return result
+
+
+@app.post("/api/afsim/drafts/{draft_id}/restore")
+async def afsim_restore_draft(draft_id: str, user: User = Depends(current_user)) -> dict[str, object]:
+    if not user.can("edit:scenario"):
+        raise HTTPException(status_code=403, detail="permission denied")
+    try:
+        result = restore_scene_draft(draft_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    storage.add_event("afsim.draft.restored", {"draft_id": draft_id})
+    return result
 
 
 @app.get("/api/afsim/scenario")
