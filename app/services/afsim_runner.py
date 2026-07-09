@@ -17,6 +17,7 @@ from app.services.afsim_design import generated_input_path
 
 RUN_ROOT = PROJECT_ROOT / "runtime" / "afsim_runs"
 WORKDIR_ROOT = PROJECT_ROOT / "runtime" / "afsim_workdirs"
+RUN_MODES = {"es", "fs", "rt"}
 
 
 @dataclass(frozen=True)
@@ -193,6 +194,7 @@ def _run_input(
     run_id: str,
     source: str,
     timeout_seconds: int,
+    mode: str = "es",
     metadata: dict[str, Any] | None = None,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
     process_callback: Callable[[subprocess.Popen[str]], None] | None = None,
@@ -203,20 +205,26 @@ def _run_input(
         raise FileNotFoundError(f"mission.exe not found: {paths.mission_exe}")
     if not input_path.exists() or input_path.suffix.lower() != ".txt":
         raise FileNotFoundError(f"input file not found: {input_path}")
+    normalized_mode = mode.lower().strip()
+    if normalized_mode not in RUN_MODES:
+        raise ValueError(f"unsupported AFSIM run mode: {mode}")
 
     output_dir = working_dir / "output"
     output_dir.mkdir(exist_ok=True)
     run_dir = RUN_ROOT / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     started_at = time.time()
-    command = [str(paths.mission_exe), input_path.name]
+    command = [str(paths.mission_exe), f"-{normalized_mode}", input_path.name]
     stdout_path = run_dir / "mission.stdout.log"
     stderr_path = run_dir / "mission.stderr.log"
     if progress_callback:
         progress_callback(
             {
                 "phase": "starting",
+                "run_id": run_id,
                 "command": command,
+                "mode": normalized_mode,
+                "realtime": normalized_mode == "rt",
                 "working_dir": str(working_dir),
                 "run_dir": str(run_dir),
                 "output_dir": str(output_dir),
@@ -255,10 +263,21 @@ def _run_input(
                 break
             if progress_callback:
                 snapshot = _output_snapshot(output_dir, run_dir, started_at, stdout_path, stderr_path)
-                snapshot.update({"phase": "running", "command": command, "working_dir": str(working_dir)})
+                snapshot.update(
+                    {
+                        "phase": "running",
+                        "run_id": run_id,
+                        "command": command,
+                        "mode": normalized_mode,
+                        "realtime": normalized_mode == "rt",
+                        "working_dir": str(working_dir),
+                    }
+                )
                 progress_callback(snapshot)
             time.sleep(0.75)
         proc.wait()
+        if cancel_event and cancel_event.is_set():
+            canceled = True
     completed_at = time.time()
     stdout = _tail_text(stdout_path)
     stderr = _tail_text(stderr_path)
@@ -283,6 +302,8 @@ def _run_input(
         "run_id": run_id,
         "source": source,
         "input_file": input_path.name,
+        "mode": normalized_mode,
+        "realtime": normalized_mode == "rt",
         "command": command,
         "working_dir": str(working_dir),
         "run_dir": str(run_dir),
@@ -303,7 +324,10 @@ def _run_input(
         snapshot.update(
             {
                 "phase": "canceled" if canceled else "finished",
+                "run_id": run_id,
                 "command": command,
+                "mode": normalized_mode,
+                "realtime": normalized_mode == "rt",
                 "working_dir": str(working_dir),
                 "returncode": proc.returncode,
             }
@@ -359,6 +383,7 @@ def run_demo(
     demo_name: str,
     input_file: str | None = None,
     timeout_seconds: int = 120,
+    mode: str = "es",
     *,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
     process_callback: Callable[[subprocess.Popen[str]], None] | None = None,
@@ -389,6 +414,7 @@ def run_demo(
         run_id=run_id,
         source="demo",
         timeout_seconds=timeout_seconds,
+        mode=mode,
         metadata={"demo_name": demo_name, "original_demo_dir": str(demo_dir)},
         progress_callback=progress_callback,
         process_callback=process_callback,
@@ -399,6 +425,7 @@ def run_demo(
 def run_generated_scenario(
     scenario_id: str,
     timeout_seconds: int = 120,
+    mode: str = "es",
     *,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
     process_callback: Callable[[subprocess.Popen[str]], None] | None = None,
@@ -412,6 +439,7 @@ def run_generated_scenario(
         run_id=run_id,
         source="generated",
         timeout_seconds=timeout_seconds,
+        mode=mode,
         metadata={"scenario_id": scenario_id, "demo_name": f"generated:{scenario_id}"},
         progress_callback=progress_callback,
         process_callback=process_callback,

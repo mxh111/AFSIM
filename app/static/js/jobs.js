@@ -1,25 +1,28 @@
 import { api } from "./api.js";
+import { applyAuthToken } from "./auth.js";
 
 export function jobWebSocketUrl(jobId) {
   const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-  return `${protocol}://${window.location.host}/ws/afsim/jobs/${encodeURIComponent(jobId)}`;
+  const params = applyAuthToken(new URLSearchParams());
+  return `${protocol}://${window.location.host}/ws/afsim/jobs/${encodeURIComponent(jobId)}?${params.toString()}`;
 }
 
-export async function submitDemoJob({ demoName, inputFile, timeoutSeconds }) {
+export async function submitDemoJob({ demoName, inputFile, timeoutSeconds, mode = "es" }) {
   return api("/api/afsim/run/jobs", {
     method: "POST",
     body: JSON.stringify({
       demo_name: demoName,
       input_file: inputFile || null,
       timeout_seconds: timeoutSeconds,
+      mode,
     }),
   });
 }
 
-export async function submitGeneratedJob({ scenarioId, timeoutSeconds }) {
+export async function submitGeneratedJob({ scenarioId, timeoutSeconds, mode = "es" }) {
   return api(`/api/afsim/designs/${encodeURIComponent(scenarioId)}/run/jobs`, {
     method: "POST",
-    body: JSON.stringify({ timeout_seconds: timeoutSeconds }),
+    body: JSON.stringify({ timeout_seconds: timeoutSeconds, mode }),
   });
 }
 

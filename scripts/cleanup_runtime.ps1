@@ -1,39 +1,69 @@
 param(
-  [int]$KeepRecent = 30,
+  [Alias("KeepRecent")]
+  [int]$KeepRuns = 30,
   [int]$KeepDays = 7,
-  [switch]$DryRun
+  [switch]$Apply,
+  [string]$ProjectRoot = (Join-Path $PSScriptRoot "..")
 )
 
 $ErrorActionPreference = "Stop"
 
-$projectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
-$runtimeRoot = Join-Path $projectRoot "runtime"
+$projectRootPath = (Resolve-Path -LiteralPath $ProjectRoot).Path
+$runtimeRoot = Join-Path $projectRootPath "runtime"
 $runsRoot = Join-Path $runtimeRoot "afsim_runs"
 $workdirsRoot = Join-Path $runtimeRoot "afsim_workdirs"
 $replayCacheRoot = Join-Path $runtimeRoot "workbench\replay_cache"
+$generatedRoot = Join-Path $projectRootPath "generated_scenarios"
 $cutoff = (Get-Date).AddDays(-[Math]::Max(0, $KeepDays))
+$planned = New-Object System.Collections.Generic.List[object]
 
-function Assert-InRuntime {
+function Convert-ToFullPath {
   param([string]$Path)
-  $resolved = [System.IO.Path]::GetFullPath($Path)
-  $runtimeResolved = [System.IO.Path]::GetFullPath($runtimeRoot)
-  if (-not $resolved.StartsWith($runtimeResolved, [System.StringComparison]::OrdinalIgnoreCase)) {
-    throw "Refusing to delete outside runtime: $resolved"
+  return [System.IO.Path]::GetFullPath($Path)
+}
+
+function Test-IsUnderPath {
+  param(
+    [string]$Path,
+    [string]$Parent
+  )
+  $resolved = Convert-ToFullPath -Path $Path
+  $parentResolved = Convert-ToFullPath -Path $Parent
+  if (-not $parentResolved.EndsWith([System.IO.Path]::DirectorySeparatorChar)) {
+    $parentResolved = $parentResolved + [System.IO.Path]::DirectorySeparatorChar
   }
+  return $resolved.StartsWith($parentResolved, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Assert-InCleanupRoots {
+  param([string]$Path)
+  $resolved = Convert-ToFullPath -Path $Path
+  $runtimeResolved = Convert-ToFullPath -Path $runtimeRoot
+  $generatedResolved = Convert-ToFullPath -Path $generatedRoot
+  if ($resolved -eq $runtimeResolved -or $resolved -eq $generatedResolved) {
+    throw "Refusing to delete cleanup root itself: $resolved"
+  }
+  if ((Test-IsUnderPath -Path $resolved -Parent $runtimeRoot) -or (Test-IsUnderPath -Path $resolved -Parent $generatedRoot)) {
+    return
+  }
+  throw "Refusing to delete outside runtime/generated_scenarios: $resolved"
 }
 
 function Test-ManualKeep {
-  param([System.IO.DirectoryInfo]$RunDir)
-  foreach ($marker in @(".keep", "KEEP", "keep", "retain", ".retain")) {
-    if (Test-Path -LiteralPath (Join-Path $RunDir.FullName $marker)) {
+  param([System.IO.FileSystemInfo]$Item)
+  if (-not $Item -or -not (Test-Path -LiteralPath $Item.FullName -PathType Container)) {
+    return $false
+  }
+  foreach ($marker in @(".keep", "KEEP", "keep", "keep.txt", "retain", ".retain", "_keep")) {
+    if (Test-Path -LiteralPath (Join-Path $Item.FullName $marker)) {
       return $true
     }
   }
-  $runJson = Join-Path $RunDir.FullName "run.json"
+  $runJson = Join-Path $Item.FullName "run.json"
   if (Test-Path -LiteralPath $runJson) {
     try {
       $payload = Get-Content -Raw -LiteralPath $runJson | ConvertFrom-Json
-      if ($payload.keep -eq $true -or $payload.retain -eq $true -or $payload.pinned -eq $true) {
+      if ($payload.keep -eq $true -or $payload.retain -eq $true -or $payload.pinned -eq $true -or $payload.manual_keep -eq $true) {
         return $true
       }
     } catch {
@@ -43,93 +73,136 @@ function Test-ManualKeep {
   return $false
 }
 
-function Remove-DirectorySafe {
-  param([string]$Path)
+function Add-Plan {
+  param(
+    [string]$Kind,
+    [string]$Path,
+    [string]$Reason
+  )
   if (-not (Test-Path -LiteralPath $Path)) {
     return
   }
-  Assert-InRuntime -Path $Path
-  if ($DryRun) {
-    Write-Host "[dry-run] remove $Path"
-  } else {
-    Remove-Item -LiteralPath $Path -Recurse -Force
-    Write-Host "removed $Path"
-  }
+  Assert-InCleanupRoots -Path $Path
+  $item = Get-Item -LiteralPath $Path
+  $planned.Add([PSCustomObject]@{
+    kind = $Kind
+    path = $item.FullName
+    reason = $Reason
+    last_write_time = $item.LastWriteTime.ToString("o")
+  }) | Out-Null
 }
 
-function Remove-FileSafe {
-  param([string]$Path)
-  if (-not (Test-Path -LiteralPath $Path)) {
+function Invoke-Plan {
+  if ($planned.Count -eq 0) {
+    Write-Host "No cleanup candidates. keep_runs=$KeepRuns keep_days=$KeepDays mode=$(if ($Apply) { 'apply' } else { 'dry-run' })"
     return
   }
-  Assert-InRuntime -Path $Path
-  if ($DryRun) {
-    Write-Host "[dry-run] remove $Path"
-  } else {
-    Remove-Item -LiteralPath $Path -Force
-    Write-Host "removed $Path"
+
+  Write-Host "Cleanup candidates: $($planned.Count). keep_runs=$KeepRuns keep_days=$KeepDays mode=$(if ($Apply) { 'apply' } else { 'dry-run' })"
+  foreach ($entry in $planned) {
+    $prefix = if ($Apply) { "[delete]" } else { "[dry-run]" }
+    Write-Host "$prefix $($entry.kind) $($entry.path) :: $($entry.reason)"
+    if ($Apply) {
+      Assert-InCleanupRoots -Path $entry.path
+      if (Test-Path -LiteralPath $entry.path -PathType Container) {
+        Remove-Item -LiteralPath $entry.path -Recurse -Force
+      } elseif (Test-Path -LiteralPath $entry.path -PathType Leaf) {
+        Remove-Item -LiteralPath $entry.path -Force
+      }
+    }
   }
 }
 
-if (-not (Test-Path -LiteralPath $runtimeRoot)) {
-  Write-Host "runtime does not exist: $runtimeRoot"
+Write-Host "AFSIM_LLM runtime cleanup"
+Write-Host "project_root=$projectRootPath"
+Write-Host "mode=$(if ($Apply) { 'apply' } else { 'dry-run' })"
+
+if (-not (Test-Path -LiteralPath $runtimeRoot) -and -not (Test-Path -LiteralPath $generatedRoot)) {
+  Write-Host "Nothing to scan: runtime and generated_scenarios are absent."
   exit 0
 }
 
 $runDirs = @()
 if (Test-Path -LiteralPath $runsRoot) {
-  $runDirs = Get-ChildItem -LiteralPath $runsRoot -Directory |
-    Sort-Object LastWriteTime -Descending
+  $runDirs = Get-ChildItem -LiteralPath $runsRoot -Directory | Sort-Object LastWriteTime -Descending
 }
 
-$recentIds = @{}
-$runDirs | Select-Object -First ([Math]::Max(0, $KeepRecent)) | ForEach-Object {
-  $recentIds[$_.Name] = $true
+$keptRunIds = @{}
+$runDirs | Select-Object -First ([Math]::Max(0, $KeepRuns)) | ForEach-Object {
+  $keptRunIds[$_.Name] = $true
 }
 
-$deletedIds = New-Object System.Collections.Generic.List[string]
+$deletedRunIds = New-Object System.Collections.Generic.List[string]
 foreach ($runDir in $runDirs) {
-  if (Test-ManualKeep -RunDir $runDir) {
-    Write-Host "keep marked run $($runDir.Name)"
+  if (Test-ManualKeep -Item $runDir) {
+    $keptRunIds[$runDir.Name] = $true
+    Write-Host "[keep] afsim_run $($runDir.FullName) :: manual keep marker"
     continue
   }
-  $isRecent = $recentIds.ContainsKey($runDir.Name)
+  $isRecent = $keptRunIds.ContainsKey($runDir.Name)
   $isYoung = $runDir.LastWriteTime -ge $cutoff
   if ($isRecent -or $isYoung) {
     continue
   }
-  Remove-DirectorySafe -Path $runDir.FullName
-  $deletedIds.Add($runDir.Name) | Out-Null
-  Remove-DirectorySafe -Path (Join-Path $workdirsRoot $runDir.Name)
+  Add-Plan -Kind "afsim_run" -Path $runDir.FullName -Reason "older than $KeepDays days and outside newest $KeepRuns runs"
+  $deletedRunIds.Add($runDir.Name) | Out-Null
+  $workdir = Join-Path $workdirsRoot $runDir.Name
+  if (Test-Path -LiteralPath $workdir) {
+    Add-Plan -Kind "afsim_workdir" -Path $workdir -Reason "corresponds to removed run $($runDir.Name)"
+  }
 }
 
 if (Test-Path -LiteralPath $workdirsRoot) {
-  $knownRunIds = @{}
-  if (Test-Path -LiteralPath $runsRoot) {
-    Get-ChildItem -LiteralPath $runsRoot -Directory | ForEach-Object { $knownRunIds[$_.Name] = $true }
-  }
   Get-ChildItem -LiteralPath $workdirsRoot -Directory | ForEach-Object {
-    if ($knownRunIds.ContainsKey($_.Name)) {
+    if ($keptRunIds.ContainsKey($_.Name)) {
+      return
+    }
+    if (Test-ManualKeep -Item $_) {
+      Write-Host "[keep] afsim_workdir $($_.FullName) :: manual keep marker"
       return
     }
     if ($_.LastWriteTime -ge $cutoff) {
       return
     }
-    Remove-DirectorySafe -Path $_.FullName
+    Add-Plan -Kind "afsim_workdir" -Path $_.FullName -Reason "orphaned or old workdir"
   }
 }
 
 if (Test-Path -LiteralPath $replayCacheRoot) {
   $deletedSet = @{}
-  $deletedIds | ForEach-Object { $deletedSet[$_] = $true }
+  $deletedRunIds | ForEach-Object { $deletedSet[$_] = $true }
   Get-ChildItem -LiteralPath $replayCacheRoot -File -Filter "*.json" | ForEach-Object {
-    $stem = $_.BaseName
-    $staleByRun = $deletedSet.ContainsKey($stem)
     $old = $_.LastWriteTime -lt $cutoff
-    if ($staleByRun -or $old) {
-      Remove-FileSafe -Path $_.FullName
+    $linkedDeletedRun = $false
+    foreach ($runId in $deletedSet.Keys) {
+      if ($_.BaseName.StartsWith($runId, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $linkedDeletedRun = $true
+        break
+      }
+    }
+    if ($old -or $linkedDeletedRun) {
+      Add-Plan -Kind "replay_cache" -Path $_.FullName -Reason "old cache or linked to removed run"
     }
   }
 }
 
-Write-Host "cleanup complete. keep_recent=$KeepRecent keep_days=$KeepDays deleted_runs=$($deletedIds.Count)"
+if (Test-Path -LiteralPath $generatedRoot) {
+  Get-ChildItem -LiteralPath $generatedRoot -Directory | ForEach-Object {
+    $name = $_.Name.ToLowerInvariant()
+    $isTestScenario = $name.Contains("pytest") -or $name.Contains("smoke")
+    if (-not $isTestScenario) {
+      return
+    }
+    if (Test-ManualKeep -Item $_) {
+      Write-Host "[keep] generated_scenario $($_.FullName) :: manual keep marker"
+      return
+    }
+    if ($_.LastWriteTime -ge $cutoff) {
+      return
+    }
+    Add-Plan -Kind "generated_scenario" -Path $_.FullName -Reason "old pytest/smoke generated scenario"
+  }
+}
+
+Invoke-Plan
+Write-Host "cleanup complete. planned=$($planned.Count) applied=$(if ($Apply) { 'true' } else { 'false' })"

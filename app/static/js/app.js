@@ -1,14 +1,23 @@
-import { disposeOperationalMap, renderOperationalMap, sideColor } from "./map_renderer.js";
+import { sideColor } from "./map_renderer.js";
 import { api, clamp, escapeHtml } from "./api.js";
 import { cancelJob, getJob, getJobReplay, jobWebSocketUrl, submitDemoJob, submitGeneratedJob } from "./jobs.js";
 import { replayEvents, replayFrameAt, replayFrames, timelineEnd as replayTimelineEnd } from "./replay.js";
-import { previewWebSocketUrl } from "./realtime.js";
+import { afsimRealtimeWebSocketUrl, previewWebSocketUrl } from "./realtime.js";
+import { canvasAdapter } from "./map_adapters/canvas_adapter.js";
+import { maplibreAdapter } from "./map_adapters/maplibre_adapter.js";
+import { cesiumAdapter } from "./map_adapters/cesium_adapter.js";
 
 const MODE_LABELS = {
   design_preview: "设计预览",
-  afsim_running: "AFSIM 运行中",
+  afsim_realtime: "AFSIM 实时流",
   replay: "AFSIM 复盘",
   no_frames: "无可用帧",
+};
+
+const MAP_ADAPTERS = {
+  canvas: canvasAdapter,
+  maplibre: maplibreAdapter,
+  cesium: cesiumAdapter,
 };
 
 const state = {
@@ -23,7 +32,13 @@ const state = {
   selectedId: null,
   selectedEventId: null,
   mapView: null,
+  mapEngine: "canvas",
+  renderedMapEngine: null,
+  mapAdapterStatus: null,
   previewSocket: null,
+  realtimeSocket: null,
+  realtimeRunId: null,
+  realtimeStatus: null,
   jobSocket: null,
   pollTimer: null,
   replayTimer: null,
@@ -48,6 +63,7 @@ const els = {
   runId: document.getElementById("runId"),
   returnCode: document.getElementById("returnCode"),
   sourceMode: document.getElementById("sourceMode"),
+  sourceAuthority: document.getElementById("sourceAuthority"),
   simTime: document.getElementById("simTime"),
   frameCount: document.getElementById("frameCount"),
   eventCount: document.getElementById("eventCount"),
@@ -55,6 +71,7 @@ const els = {
   demoSelect: document.getElementById("demoSelect"),
   generatedSelect: document.getElementById("generatedSelect"),
   timeoutInput: document.getElementById("timeoutInput"),
+  runModeSelect: document.getElementById("runModeSelect"),
   reloadWorkbenchBtn: document.getElementById("reloadWorkbenchBtn"),
   runDemoBtn: document.getElementById("runDemoBtn"),
   runGeneratedBtn: document.getElementById("runGeneratedBtn"),
@@ -66,6 +83,7 @@ const els = {
   layerList: document.getElementById("layerList"),
   mapTitle: document.getElementById("mapTitle"),
   mapSubtitle: document.getElementById("mapSubtitle"),
+  mapEngineSelect: document.getElementById("mapEngineSelect"),
   fitMapBtn: document.getElementById("fitMapBtn"),
   refreshReplayBtn: document.getElementById("refreshReplayBtn"),
   sceneView: document.getElementById("sceneView"),
@@ -74,6 +92,7 @@ const els = {
   hudTime: document.getElementById("hudTime"),
   hudEntities: document.getElementById("hudEntities"),
   hudEvents: document.getElementById("hudEvents"),
+  hudAuthority: document.getElementById("hudAuthority"),
   noFramesNotice: document.getElementById("noFramesNotice"),
   timelineRange: document.getElementById("timelineRange"),
   timeLabel: document.getElementById("timeLabel"),
@@ -97,6 +116,14 @@ function assertElements() {
 function timeoutSeconds() {
   const value = Number(els.timeoutInput.value || 180);
   return Math.max(5, Math.min(1800, Math.round(Number.isFinite(value) ? value : 180)));
+}
+
+function runMode() {
+  return ["es", "fs", "rt"].includes(els.runModeSelect.value) ? els.runModeSelect.value : "es";
+}
+
+function mapEngine() {
+  return MAP_ADAPTERS[els.mapEngineSelect.value] ? els.mapEngineSelect.value : "canvas";
 }
 
 function formatSeconds(value) {
@@ -141,6 +168,10 @@ function mapResourceState() {
   return { label: "底图 fallback", kind: "bad" };
 }
 
+function sourceAuthoritative() {
+  return Boolean(state.currentFrame?.authoritative ?? state.realtimeStatus?.authoritative ?? false);
+}
+
 function setCardState(id, kind) {
   const card = document.getElementById(id)?.closest(".status-card");
   if (!card) return;
@@ -161,6 +192,7 @@ function renderStatus() {
   const basemap = mapResourceState();
   const missionOk = Boolean(afsim.mission_exists);
   const status = state.activeJob?.status || (run.run_id ? (run.returncode === 0 ? "finished" : "failed") : "idle");
+  const authoritative = sourceAuthoritative();
 
   els.currentScenario.textContent = scenarioLabel();
   els.afsimRoot.textContent = afsim.root || "-";
@@ -169,6 +201,7 @@ function renderStatus() {
   els.runId.textContent = runId;
   els.returnCode.textContent = String(returnCode);
   els.sourceMode.textContent = MODE_LABELS[state.dataMode] || state.dataMode;
+  els.sourceAuthority.textContent = authoritative ? "true" : "false";
   els.simTime.textContent = `T+${currentSimTime().toFixed(1)}s`;
   els.frameCount.textContent = String(frameCount);
   els.eventCount.textContent = String(eventCount);
@@ -177,7 +210,8 @@ function renderStatus() {
   setCardState("missionExeStatus", missionOk ? "good" : "bad");
   setCardState("runStatus", status === "running" || status === "queued" ? "running" : status === "failed" ? "bad" : "good");
   setCardState("returnCode", returnCode === "-" ? "" : Number(returnCode) === 0 ? "good" : "bad");
-  setCardState("sourceMode", state.dataMode === "afsim_running" ? "running" : state.dataMode === "no_frames" ? "warn" : "good");
+  setCardState("sourceMode", state.dataMode === "afsim_realtime" ? (authoritative ? "running" : "warn") : state.dataMode === "no_frames" ? "warn" : "good");
+  setCardState("sourceAuthority", authoritative ? "good" : "warn");
   setCardState("basemapStatus", basemap.kind);
 
   els.systemStatus.textContent = missionOk
@@ -187,11 +221,15 @@ function renderStatus() {
 
 function renderHud() {
   const frame = state.currentFrame;
-  const eventCount = replayEvents(state.workbench).length;
-  els.hudSource.textContent = `source: ${frame?.source || MODE_LABELS[state.dataMode] || "none"}`;
-  els.hudTime.textContent = `sim_time: ${currentSimTime().toFixed(1)}`;
-  els.hudEntities.textContent = `entity_count: ${frame?.entity_count ?? targetEntities().length}`;
+  const realtime = state.realtimeStatus;
+  const eventCount = frame?.event_count ?? realtime?.event_count ?? replayEvents(state.workbench).length;
+  const entityCount = frame?.entity_count ?? realtime?.entity_count ?? targetEntities().length;
+  const simTime = frame?.sim_time ?? realtime?.sim_time ?? currentSimTime();
+  els.hudSource.textContent = `source: ${frame?.source || realtime?.source || MODE_LABELS[state.dataMode] || "none"}`;
+  els.hudTime.textContent = `sim_time: ${Number.isFinite(Number(simTime)) ? Number(simTime).toFixed(1) : "-"}`;
+  els.hudEntities.textContent = `entity_count: ${entityCount}`;
   els.hudEvents.textContent = `event_count: ${eventCount}`;
+  els.hudAuthority.textContent = `authoritative: ${sourceAuthoritative() ? "true" : "false"}`;
 }
 
 function targetEntities() {
@@ -221,18 +259,61 @@ function normalizeEntity(entity, fallback = {}) {
   };
 }
 
+function frameEventIds(frame) {
+  return (frame?.events || [])
+    .map((event) => (event && typeof event === "object" ? event.id : event))
+    .filter(Boolean);
+}
+
+function mapFrameInput() {
+  const platforms = (state.workbench?.platforms || []).map((platform) => normalizeEntity(platform));
+  const frame = state.currentFrame || null;
+  return {
+    schema_version: "afsim-map-frame.v1",
+    mode: state.dataMode,
+    source: frame?.source || state.workbench?.source?.kind || "design-preview",
+    authoritative: Boolean(frame?.authoritative),
+    sim_time: currentSimTime(),
+    scene: state.workbench,
+    platforms,
+    entities: targetEntities(),
+    tracks: state.workbench?.tracks || [],
+    detections: state.workbench?.detections || [],
+    communications: state.workbench?.communications || [],
+    events: replayEvents(state.workbench),
+    frame,
+    frame_event_ids: frameEventIds(frame),
+  };
+}
+
+function currentMapAdapter() {
+  return MAP_ADAPTERS[state.mapEngine] || MAP_ADAPTERS.canvas;
+}
+
+function disposeRenderedMap() {
+  const previous = MAP_ADAPTERS[state.renderedMapEngine];
+  if (previous) previous.dispose(els.sceneView);
+  state.renderedMapEngine = null;
+  state.mapAdapterStatus = null;
+}
+
 function renderMap() {
   if (!state.workbench) {
-    disposeOperationalMap(els.sceneView);
+    disposeRenderedMap();
     els.sceneView.innerHTML = `<div class="empty-row">等待 workbench 数据...</div>`;
     return;
   }
-  renderOperationalMap(els.sceneView, state.workbench, {
+  const adapter = currentMapAdapter();
+  if (state.renderedMapEngine && state.renderedMapEngine !== adapter.id) {
+    disposeRenderedMap();
+  }
+  state.mapAdapterStatus = adapter.render(els.sceneView, mapFrameInput(), {
     frame: state.currentFrame,
     selectedId: state.selectedId,
     selectedEventId: state.selectedEventId,
     viewState: state.mapView,
   });
+  state.renderedMapEngine = adapter.id;
   renderHud();
 }
 
@@ -471,6 +552,7 @@ async function loadDesigns() {
 
 async function loadWorkbench(params = sourceParams()) {
   stopPreviewStream();
+  stopAfSimRealtime();
   stopReplayPlayback();
   state.currentFrame = null;
   state.selectedEventId = null;
@@ -511,18 +593,19 @@ function applyReplayTime(timeValue) {
   const frame = replayFrameAt(state.workbench, timeValue, normalizeEntity);
   if (!frame) {
     state.currentFrame = null;
-    if (state.dataMode !== "afsim_running") setDataMode("no_frames");
+    if (state.dataMode !== "afsim_realtime") setDataMode("no_frames");
     renderAll();
     return false;
   }
   state.currentFrame = frame;
-  if (state.dataMode !== "afsim_running") setDataMode("replay");
+  setDataMode("replay");
   renderAll();
   return true;
 }
 
 function applyReplay(replay, options = {}) {
   if (!state.workbench) return;
+  stopAfSimRealtime();
   state.workbench.replay = replay;
   state.lastRun = replay.run || state.lastRun;
   state.outputFiles = replay.run?.files || state.outputFiles || [];
@@ -577,7 +660,10 @@ function updateJobState(job, event = null) {
   if (Array.isArray(files)) state.outputFiles = files;
   const tail = progress.tail || run?.summary?.tail || [];
   if (Array.isArray(tail) && tail.length) state.logLines = tail;
-  if (job.status === "queued" || job.status === "running") setDataMode("afsim_running");
+  const realtimeRunId = progress.run_id || run?.run_id;
+  if ((progress.realtime || run?.realtime) && realtimeRunId) {
+    startAfSimRealtime(realtimeRunId);
+  }
   if (job.status === "failed") {
     setDataMode("no_frames");
     state.diagnostics.push(job.error || event?.error || "AFSIM job failed");
@@ -663,10 +749,12 @@ async function runDemo() {
   const option = selectedDemoOption();
   if (!option) throw new Error("没有可用 Demo");
   stopPreviewStream();
+  stopAfSimRealtime();
   stopReplayPlayback();
   state.activeScenarioId = null;
   state.activeDemo = { demo_name: option.value, input_file: option.dataset.input || null };
-  setDataMode("afsim_running");
+  const selectedMode = runMode();
+  setDataMode(selectedMode === "rt" ? "afsim_realtime" : "design_preview");
   state.currentFrame = null;
   state.activeJob = null;
   state.activeJobId = null;
@@ -679,6 +767,7 @@ async function runDemo() {
     demoName: option.value,
     inputFile: option.dataset.input || null,
     timeoutSeconds: timeoutSeconds(),
+    mode: selectedMode,
   });
   watchJob(job);
 }
@@ -687,10 +776,12 @@ async function runGenerated() {
   const scenarioId = selectedGeneratedId();
   if (!scenarioId) throw new Error("请先选择生成场景");
   stopPreviewStream();
+  stopAfSimRealtime();
   stopReplayPlayback();
   state.activeScenarioId = scenarioId;
   state.activeDemo = null;
-  setDataMode("afsim_running");
+  const selectedMode = runMode();
+  setDataMode(selectedMode === "rt" ? "afsim_realtime" : "design_preview");
   state.currentFrame = null;
   state.activeJob = null;
   state.activeJobId = null;
@@ -699,7 +790,7 @@ async function runGenerated() {
   state.logLines = [`提交生成场景作业: ${scenarioId}`];
   state.diagnostics = [];
   renderAll();
-  const job = await submitGeneratedJob({ scenarioId, timeoutSeconds: timeoutSeconds() });
+  const job = await submitGeneratedJob({ scenarioId, timeoutSeconds: timeoutSeconds(), mode: selectedMode });
   watchJob(job);
 }
 
@@ -710,8 +801,77 @@ function stopPreviewStream() {
   els.previewStreamBtn.textContent = "开启设计预览流";
 }
 
+function stopAfSimRealtime() {
+  if (state.realtimeSocket) state.realtimeSocket.close();
+  state.realtimeSocket = null;
+  state.realtimeRunId = null;
+  state.realtimeStatus = null;
+}
+
+function applyRealtimeFrame(frame) {
+  const incomingEvents = (frame.events || []).filter((event) => event && typeof event === "object");
+  const eventIds = incomingEvents.map((event) => event.id).filter(Boolean);
+  if (incomingEvents.length && state.workbench) {
+    const byId = new Map((state.workbench.events || []).map((event) => [event.id, event]));
+    for (const event of incomingEvents) byId.set(event.id, event);
+    state.workbench.events = [...byId.values()].sort((a, b) => Number(a.time || 0) - Number(b.time || 0));
+  }
+  if (Array.isArray(frame.tracks) && frame.tracks.length && state.workbench) {
+    state.workbench.tracks = [
+      ...(state.workbench.tracks || []).filter((track) => !String(track.id || "").startsWith("rt_trk_")),
+      ...frame.tracks,
+    ];
+  }
+  state.currentFrame = {
+    ...frame,
+    events: eventIds.length ? eventIds : (frame.event_ids || frame.events || []),
+  };
+}
+
+function startAfSimRealtime(runId) {
+  if (!runId) return;
+  if (state.realtimeRunId === runId) return;
+  stopPreviewStream();
+  stopReplayPlayback();
+  stopAfSimRealtime();
+  state.realtimeRunId = runId;
+  setDataMode("afsim_realtime");
+  const socket = new WebSocket(afsimRealtimeWebSocketUrl(runId));
+  state.realtimeSocket = socket;
+  socket.addEventListener("message", (message) => {
+    const payload = JSON.parse(message.data);
+    if (payload.error) {
+      state.diagnostics.push(`AFSIM realtime stream error: ${payload.error}`);
+      renderDiagnostics();
+      return;
+    }
+    if (payload.status === "unavailable" || payload.status === "empty") {
+      state.realtimeStatus = payload;
+      state.currentFrame = null;
+      setDataMode("afsim_realtime");
+      renderAll();
+      return;
+    }
+    const frame = payload.frame || payload;
+    applyRealtimeFrame(frame);
+    if (state.workbench?.simulation_time && Number.isFinite(Number(frame.sim_time))) {
+      state.workbench.simulation_time.current = Number(frame.sim_time);
+    }
+    setDataMode("afsim_realtime");
+    renderAll();
+  });
+  socket.addEventListener("close", () => {
+    if (state.realtimeSocket === socket) state.realtimeSocket = null;
+  });
+  socket.addEventListener("error", () => {
+    state.diagnostics.push("AFSIM realtime WebSocket connection failed.");
+    renderDiagnostics();
+  });
+}
+
 function startPreviewStream() {
   stopReplayPlayback();
+  stopAfSimRealtime();
   stopPreviewStream();
   setDataMode("design_preview");
   const params = sourceParams();
@@ -766,6 +926,7 @@ function playReplay() {
     return;
   }
   stopPreviewStream();
+  stopAfSimRealtime();
   if (state.replayTimer) {
     stopReplayPlayback();
     return;
@@ -808,6 +969,7 @@ async function cancelCurrentJob() {
 
 function stopPlaybackAndPreview() {
   stopPreviewStream();
+  stopAfSimRealtime();
   stopReplayPlayback();
   renderAll();
 }
@@ -827,6 +989,11 @@ function bindEvents() {
   els.previewStreamBtn.addEventListener("click", togglePreviewStream);
   els.playReplayBtn.addEventListener("click", playReplay);
   els.stopPlaybackBtn.addEventListener("click", stopPlaybackAndPreview);
+  els.mapEngineSelect.addEventListener("change", () => {
+    state.mapEngine = mapEngine();
+    state.mapView = null;
+    renderMap();
+  });
   els.fitMapBtn.addEventListener("click", () => {
     state.mapView = null;
     renderMap();
@@ -880,6 +1047,7 @@ window.addEventListener("unhandledrejection", (event) => showError(event.reason 
 
 async function boot() {
   assertElements();
+  state.mapEngine = mapEngine();
   bindEvents();
   els.sceneView.innerHTML = `<div class="empty-row">正在加载 AFSIM workbench...</div>`;
   await loadHealth().catch(showError);

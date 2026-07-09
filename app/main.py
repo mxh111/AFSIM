@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from app.core.config import PROJECT_ROOT, settings
-from app.core.security import User, role_catalog, user_from_token
+from app.core.security import AuthenticationError, User, role_catalog, user_from_token
 from app.models import (
     AFSimAgentTickRequest,
     AFSimDraftRequest,
@@ -29,6 +29,7 @@ from app.services.afsim_design import (
     read_generated_scenario,
     scene_overview,
 )
+from app.services.dis_bridge import bridge_capabilities
 from app.services.afsim_jobs import afsim_job_manager, stream_job_events
 from app.services.afsim_maps import (
     compose_raster_texture,
@@ -40,6 +41,7 @@ from app.services.afsim_maps import (
 )
 from app.services.afsim_parser import parse_demo_scenario, parse_scenario_file
 from app.services.afsim_realtime import build_realtime_frame
+from app.services.afsim_realtime_bridge import realtime_bridge_manager
 from app.services.afsim_runner import (
     discover_demos,
     list_runs,
@@ -81,7 +83,26 @@ async def no_cache_for_dev_assets(request, call_next):
 
 
 def current_user(x_afsim_token: str | None = Header(default=None)) -> User:
-    return user_from_token(x_afsim_token)
+    try:
+        return user_from_token(x_afsim_token)
+    except AuthenticationError as exc:
+        raise HTTPException(
+            status_code=401,
+            detail=str(exc),
+            headers={"WWW-Authenticate": "X-AFSIM-Token"},
+        ) from exc
+
+
+async def websocket_user(websocket: WebSocket, permission: str) -> User | None:
+    try:
+        user = user_from_token(websocket.query_params.get("token"))
+    except AuthenticationError:
+        await websocket.close(code=1008)
+        return None
+    if not user.can(permission):
+        await websocket.close(code=1008)
+        return None
+    return user
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -279,6 +300,13 @@ async def afsim_demos(user: User = Depends(current_user)) -> list[dict[str, obje
     if not user.can("read:state"):
         raise HTTPException(status_code=403, detail="permission denied")
     return discover_demos()
+
+
+@app.get("/api/afsim/bridges")
+async def afsim_bridges(user: User = Depends(current_user)) -> dict[str, object]:
+    if not user.can("read:state"):
+        raise HTTPException(status_code=403, detail="permission denied")
+    return bridge_capabilities()
 
 
 @app.get("/api/afsim/runs")
@@ -497,7 +525,7 @@ async def afsim_run_design(
     if not user.can("control:sim"):
         raise HTTPException(status_code=403, detail="permission denied")
     try:
-        result = run_generated_scenario(scenario_id, payload.timeout_seconds)
+        result = run_generated_scenario(scenario_id, payload.timeout_seconds, mode=payload.mode)
         replay = replay_for_run(str(result["run_id"]))
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -514,7 +542,7 @@ async def afsim_run_design_job(
     if not user.can("control:sim"):
         raise HTTPException(status_code=403, detail="permission denied")
     try:
-        job = afsim_job_manager.submit_generated(scenario_id, payload.timeout_seconds)
+        job = afsim_job_manager.submit_generated(scenario_id, payload.timeout_seconds, mode=payload.mode)
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     storage.add_event("afsim.generated.job.started", {"job_id": job["job_id"], "scenario_id": scenario_id})
@@ -550,7 +578,7 @@ async def agent_tick(payload: AFSimAgentTickRequest, user: User = Depends(curren
 async def afsim_run(payload: AFSimRunRequest, user: User = Depends(current_user)) -> dict[str, object]:
     if not user.can("control:sim"):
         raise HTTPException(status_code=403, detail="permission denied")
-    result = run_demo(payload.demo_name, payload.input_file, payload.timeout_seconds)
+    result = run_demo(payload.demo_name, payload.input_file, payload.timeout_seconds, mode=payload.mode)
     replay = replay_for_run(str(result["run_id"]))
     storage.add_event("afsim.run", result)
     return {"run": result, "replay": replay}
@@ -561,7 +589,7 @@ async def afsim_run_job(payload: AFSimRunRequest, user: User = Depends(current_u
     if not user.can("control:sim"):
         raise HTTPException(status_code=403, detail="permission denied")
     try:
-        job = afsim_job_manager.submit_demo(payload.demo_name, payload.input_file, payload.timeout_seconds)
+        job = afsim_job_manager.submit_demo(payload.demo_name, payload.input_file, payload.timeout_seconds, mode=payload.mode)
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     storage.add_event("afsim.job.started", {"job_id": job["job_id"], "demo_name": payload.demo_name})
@@ -584,6 +612,9 @@ async def afsim_analyze(payload: dict[str, object], user: User = Depends(current
 
 @app.websocket("/ws/state")
 async def state_socket(websocket: WebSocket) -> None:
+    user = await websocket_user(websocket, "read:state")
+    if not user:
+        return
     await websocket.accept()
     try:
         while True:
@@ -595,8 +626,10 @@ async def state_socket(websocket: WebSocket) -> None:
 
 
 @app.websocket("/ws/afsim/preview")
-@app.websocket("/ws/afsim/realtime")
 async def afsim_preview_socket(websocket: WebSocket) -> None:
+    user = await websocket_user(websocket, "read:state")
+    if not user:
+        return
     await websocket.accept()
     query = websocket.query_params
     scenario_id = query.get("scenario_id")
@@ -631,8 +664,30 @@ async def afsim_preview_socket(websocket: WebSocket) -> None:
         return
 
 
+@app.websocket("/ws/afsim/realtime/{run_id}")
+async def afsim_realtime_socket(websocket: WebSocket, run_id: str) -> None:
+    user = await websocket_user(websocket, "read:state")
+    if not user:
+        return
+    await websocket.accept()
+    try:
+        interval_seconds = float(websocket.query_params.get("interval_seconds") or 0.75)
+    except ValueError:
+        interval_seconds = 0.75
+    try:
+        async for frame in realtime_bridge_manager.stream(run_id, interval_seconds=interval_seconds):
+            await websocket.send_json(frame)
+    except WebSocketDisconnect:
+        return
+    except Exception as exc:
+        await websocket.send_json({"type": "afsim_realtime", "status": "error", "run_id": run_id, "error": str(exc)})
+
+
 @app.websocket("/ws/afsim/jobs/{job_id}")
 async def afsim_job_socket(websocket: WebSocket, job_id: str) -> None:
+    user = await websocket_user(websocket, "read:report")
+    if not user:
+        return
     await websocket.accept()
     try:
         cursor = int(websocket.query_params.get("cursor") or 0)

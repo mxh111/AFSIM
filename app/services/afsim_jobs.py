@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from app.services.afsim_runner import run_demo, run_generated_scenario
+from app.services.afsim_realtime_bridge import realtime_bridge_manager
 from app.services.afsim_workbench import replay_for_run
 
 
@@ -26,33 +27,35 @@ class AFSimRunJobManager:
         self._cancel_events: dict[str, threading.Event] = {}
         self._lock = threading.Lock()
 
-    def submit_demo(self, demo_name: str, input_file: str | None, timeout_seconds: int) -> dict[str, Any]:
+    def submit_demo(self, demo_name: str, input_file: str | None, timeout_seconds: int, mode: str = "es") -> dict[str, Any]:
         job_id = self._new_job(
             {
                 "kind": "demo",
                 "demo_name": demo_name,
                 "input_file": input_file,
                 "timeout_seconds": timeout_seconds,
+                "mode": mode,
             }
         )
         cancel_event = threading.Event()
         with self._lock:
             self._cancel_events[job_id] = cancel_event
-        self._executor.submit(self._run_demo_job, job_id, demo_name, input_file, timeout_seconds)
+        self._executor.submit(self._run_demo_job, job_id, demo_name, input_file, timeout_seconds, mode)
         return self.get(job_id)
 
-    def submit_generated(self, scenario_id: str, timeout_seconds: int) -> dict[str, Any]:
+    def submit_generated(self, scenario_id: str, timeout_seconds: int, mode: str = "es") -> dict[str, Any]:
         job_id = self._new_job(
             {
                 "kind": "generated",
                 "scenario_id": scenario_id,
                 "timeout_seconds": timeout_seconds,
+                "mode": mode,
             }
         )
         cancel_event = threading.Event()
         with self._lock:
             self._cancel_events[job_id] = cancel_event
-        self._executor.submit(self._run_generated_job, job_id, scenario_id, timeout_seconds)
+        self._executor.submit(self._run_generated_job, job_id, scenario_id, timeout_seconds, mode)
         return self.get(job_id)
 
     def cancel(self, job_id: str) -> dict[str, Any]:
@@ -78,6 +81,10 @@ class AFSimRunJobManager:
                 process.wait(timeout=3)
             except subprocess.TimeoutExpired:
                 process.kill()
+                try:
+                    process.wait(timeout=3)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
             except OSError:
                 pass
 
@@ -163,6 +170,13 @@ class AFSimRunJobManager:
     def _progress_callback(self, job_id: str):
         def on_progress(snapshot: dict[str, Any]) -> None:
             phase = str(snapshot.get("phase") or "running")
+            if snapshot.get("realtime") and snapshot.get("run_id"):
+                realtime_bridge_manager.register_run(
+                    str(snapshot["run_id"]),
+                    working_dir=snapshot.get("working_dir"),
+                    run_dir=snapshot.get("run_dir"),
+                    output_dir=snapshot.get("output_dir"),
+                )
             self._emit(
                 job_id,
                 phase,
@@ -192,7 +206,7 @@ class AFSimRunJobManager:
         with self._lock:
             return self._cancel_events.setdefault(job_id, threading.Event())
 
-    def _run_demo_job(self, job_id: str, demo_name: str, input_file: str | None, timeout_seconds: int) -> None:
+    def _run_demo_job(self, job_id: str, demo_name: str, input_file: str | None, timeout_seconds: int, mode: str) -> None:
         try:
             if self._cancel_event(job_id).is_set():
                 self._emit(job_id, "canceled", {"message": "AFSIM job canceled before start"})
@@ -201,6 +215,7 @@ class AFSimRunJobManager:
                 demo_name,
                 input_file,
                 timeout_seconds,
+                mode=mode,
                 progress_callback=self._progress_callback(job_id),
                 process_callback=self._process_callback(job_id),
                 cancel_event=self._cancel_event(job_id),
@@ -212,7 +227,7 @@ class AFSimRunJobManager:
             with self._lock:
                 self._processes.pop(job_id, None)
 
-    def _run_generated_job(self, job_id: str, scenario_id: str, timeout_seconds: int) -> None:
+    def _run_generated_job(self, job_id: str, scenario_id: str, timeout_seconds: int, mode: str) -> None:
         try:
             if self._cancel_event(job_id).is_set():
                 self._emit(job_id, "canceled", {"message": "AFSIM job canceled before start"})
@@ -220,6 +235,7 @@ class AFSimRunJobManager:
             result = run_generated_scenario(
                 scenario_id,
                 timeout_seconds,
+                mode=mode,
                 progress_callback=self._progress_callback(job_id),
                 process_callback=self._process_callback(job_id),
                 cancel_event=self._cancel_event(job_id),

@@ -255,6 +255,45 @@ def _parse_evt_file(
     return events, observations, meta
 
 
+def parse_evt_event_text(
+    text: str,
+    source_name: str,
+    *,
+    start_index: int = 1,
+    max_records: int = 1000,
+    include_observations: bool = True,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    events: list[dict[str, Any]] = []
+    observations: list[dict[str, Any]] = []
+    source = Path(source_name).stem
+    current: list[str] = []
+    remaining = max_records
+    for raw in text.splitlines():
+        line = raw.rstrip("\n")
+        if EVENT_START_RE.match(line):
+            if current:
+                parsed = _parse_evt_record(current, source, start_index + len(events))
+                if parsed:
+                    event = parsed["event"]
+                    events.append(event)
+                    if include_observations:
+                        observations.append({"time": event["time"], "event_id": event["id"], "entities": parsed["entities"], "event": event})
+                    remaining -= 1
+                    if remaining <= 0:
+                        return events, observations
+            current = [line]
+        elif current and line.strip():
+            current.append(line)
+    if current and remaining > 0:
+        parsed = _parse_evt_record(current, source, start_index + len(events))
+        if parsed:
+            event = parsed["event"]
+            events.append(event)
+            if include_observations:
+                observations.append({"time": event["time"], "event_id": event["id"], "entities": parsed["entities"], "event": event})
+    return events, observations
+
+
 def _parse_log_lines(run: dict[str, Any], start_index: int = 1) -> list[dict[str, Any]]:
     lines = [str(line) for line in (run.get("summary") or {}).get("tail", []) if str(line).strip()]
     events: list[dict[str, Any]] = []
@@ -279,51 +318,88 @@ def _parse_log_lines(run: dict[str, Any], start_index: int = 1) -> list[dict[str
     return events
 
 
-def _parse_csv_file(path: Path, *, max_rows: int, include_observations: bool = True) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+def _parse_csv_rows(
+    rows: Iterable[dict[str, Any]],
+    *,
+    source_name: str,
+    source_stem: str,
+    start_index: int,
+    include_observations: bool,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     events: list[dict[str, Any]] = []
     observations: list[dict[str, Any]] = []
+    for offset, row in enumerate(rows):
+        index = start_index + offset
+        lower = {str(key).lower(): value for key, value in row.items()}
+        time_s = float(lower.get("time") or lower.get("sim_time") or index)
+        entity_id = lower.get("platform") or lower.get("platform_id") or lower.get("entity") or lower.get("target") or f"csv_entity_{index}"
+        lat = lower.get("lat") or lower.get("latitude")
+        lon = lower.get("lon") or lower.get("longitude")
+        event = {
+            "id": f"{source_stem}_csv_{index}",
+            "time": time_s,
+            "type": lower.get("event") or lower.get("type") or "csv_event",
+            "severity": "info",
+            "title": lower.get("event") or lower.get("type") or "CSV 事件",
+            "message": json.dumps(row, ensure_ascii=False)[:700],
+            "source": source_name,
+            "platform_id": entity_id,
+            "layer_id": "replay.event_markers",
+        }
+        events.append(event)
+        if include_observations and lat is not None and lon is not None:
+            try:
+                entity = {
+                    "id": entity_id,
+                    "name": entity_id,
+                    "side": lower.get("side") or "neutral",
+                    "type": lower.get("platform_type") or "csv",
+                    "category": lower.get("category") or "csv",
+                    "kind": lower.get("kind") or "aircraft",
+                    "lat": float(lat),
+                    "lon": float(lon),
+                    "alt_m": float(lower.get("alt") or lower.get("alt_m") or lower.get("altitude") or 0),
+                    "heading_deg": float(lower.get("heading") or lower.get("heading_deg") or 0),
+                    "speed_kts": float(lower.get("speed_kts") or 0),
+                    "route": [],
+                    "source": "csv_event_output",
+                }
+                observations.append({"time": time_s, "event_id": event["id"], "entities": [entity], "event": event})
+            except ValueError:
+                pass
+    return events, observations
+
+
+def parse_csv_event_rows(
+    rows: Iterable[dict[str, Any]],
+    source_name: str,
+    *,
+    start_index: int = 1,
+    include_observations: bool = True,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    return _parse_csv_rows(
+        rows,
+        source_name=Path(source_name).name,
+        source_stem=Path(source_name).stem,
+        start_index=start_index,
+        include_observations=include_observations,
+    )
+
+
+def _parse_csv_file(path: Path, *, max_rows: int, include_observations: bool = True) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     with path.open("r", encoding="utf-8", errors="ignore", newline="") as handle:
         reader = csv.DictReader(handle)
+        limited_rows = []
         for index, row in enumerate(reader, start=1):
             if index > max_rows:
                 break
-            lower = {str(key).lower(): value for key, value in row.items()}
-            time_s = float(lower.get("time") or lower.get("sim_time") or index)
-            entity_id = lower.get("platform") or lower.get("platform_id") or lower.get("entity") or lower.get("target") or f"csv_entity_{index}"
-            lat = lower.get("lat") or lower.get("latitude")
-            lon = lower.get("lon") or lower.get("longitude")
-            event = {
-                "id": f"{path.stem}_csv_{index}",
-                "time": time_s,
-                "type": lower.get("event") or lower.get("type") or "csv_event",
-                "severity": "info",
-                "title": lower.get("event") or lower.get("type") or "CSV 事件",
-                "message": json.dumps(row, ensure_ascii=False)[:700],
-                "source": path.name,
-                "platform_id": entity_id,
-                "layer_id": "replay.event_markers",
-            }
-            events.append(event)
-            if include_observations and lat is not None and lon is not None:
-                try:
-                    entity = {
-                        "id": entity_id,
-                        "name": entity_id,
-                        "side": lower.get("side") or "neutral",
-                        "type": lower.get("platform_type") or "csv",
-                        "category": lower.get("category") or "csv",
-                        "kind": lower.get("kind") or "aircraft",
-                        "lat": float(lat),
-                        "lon": float(lon),
-                        "alt_m": float(lower.get("alt") or lower.get("alt_m") or lower.get("altitude") or 0),
-                        "heading_deg": float(lower.get("heading") or lower.get("heading_deg") or 0),
-                        "speed_kts": float(lower.get("speed_kts") or 0),
-                        "route": [],
-                        "source": "csv_event_output",
-                    }
-                    observations.append({"time": time_s, "event_id": event["id"], "entities": [entity], "event": event})
-                except ValueError:
-                    pass
+            limited_rows.append(row)
+    events, observations = parse_csv_event_rows(
+        limited_rows,
+        path.name,
+        start_index=1,
+        include_observations=include_observations,
+    )
     meta = {
         "name": path.name,
         "path": str(path),

@@ -44,6 +44,10 @@
             <strong id="sourceMode">设计预览</strong>
           </div>
           <div class="status-card">
+            <span>authoritative</span>
+            <strong id="sourceAuthority">false</strong>
+          </div>
+          <div class="status-card">
             <span>仿真时间</span>
             <strong id="simTime">T+0.0s</strong>
           </div>
@@ -77,6 +81,14 @@
               <span>mission.exe 超时 (秒)</span>
               <input id="timeoutInput" type="number" min="5" max="1800" value="180" />
             </label>
+            <label class="field">
+              <span>mission.exe mode</span>
+              <select id="runModeSelect">
+                <option value="es" selected>-es event simulation</option>
+                <option value="fs">-fs fast simulation</option>
+                <option value="rt">-rt realtime</option>
+              </select>
+            </label>
           </section>
 
           <section class="panel-section">
@@ -84,7 +96,7 @@
             <div class="button-stack">
               <button id="runDemoBtn" type="button" class="primary-button">运行当前 Demo</button>
               <button id="runGeneratedBtn" type="button">运行生成场景</button>
-              <button id="cancelJobBtn" type="button">取消当前作业</button>
+              <button id="cancelJobBtn" type="button">停止/取消运行</button>
               <button id="refreshJobBtn" type="button">刷新作业 / 复盘</button>
             </div>
             <p class="hint">这些按钮调用 mission.exe job 接口。运行中只展示 AFSIM 作业状态、日志和输出文件，不用本地沙盘冒充仿真。</p>
@@ -113,6 +125,14 @@
               <span id="mapSubtitle">默认 2D AFSIM 态势视图</span>
             </div>
             <div class="map-toolbar-actions">
+              <label class="map-engine-field">
+                <span>地图引擎</span>
+                <select id="mapEngineSelect">
+                  <option value="canvas" selected>Canvas Tactical</option>
+                  <option value="maplibre">MapLibre 2D</option>
+                  <option value="cesium">Cesium 3D</option>
+                </select>
+              </label>
               <button id="fitMapBtn" type="button">复位视图</button>
               <button id="refreshReplayBtn" type="button">加载最新复盘</button>
             </div>
@@ -124,6 +144,7 @@
               <span id="hudTime">sim_time: 0.0</span>
               <span id="hudEntities">entity_count: 0</span>
               <span id="hudEvents">event_count: 0</span>
+              <span id="hudAuthority">authoritative: false</span>
             </div>
             <div id="noFramesNotice" class="no-frames hidden"></div>
           </div>
@@ -177,6 +198,6 @@
       </footer>
     </div>
 
-    <script type="module" src="/static/js/app.js?v=20260707_afsim_console_zoomfix"></script>
+    <script type="module" src="/static/js/app.js?v=20260709_map_adapters"></script>
   </body>
 </html>

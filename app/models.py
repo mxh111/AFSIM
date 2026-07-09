@@ -72,6 +72,7 @@ class AFSimRunRequest(BaseModel):
     demo_name: str = Field(..., min_length=1, max_length=120)
     input_file: str | None = None
     timeout_seconds: int = Field(default=120, ge=5, le=1800)
+    mode: Literal["es", "fs", "rt"] = "es"
 
 
 class AFSimRoutePoint(BaseModel):
@@ -104,6 +105,7 @@ class AFSimScenarioDesign(BaseModel):
 
 class AFSimGeneratedRunRequest(BaseModel):
     timeout_seconds: int = Field(default=120, ge=5, le=1800)
+    mode: Literal["es", "fs", "rt"] = "es"
 
 
 class AFSimAgentTickRequest(BaseModel):

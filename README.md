@@ -157,6 +157,23 @@ SILICONFLOW_API_KEY=你的Key
 
 当前已支持 AFSIM `event_output` 文本和 CSV 事件输出的结构化解析。`.aer` 属于 AFSIM 专用/二进制回放产物，本版本先作为源产物索引，保留后续接入专用解码器或外部转换器的位置。
 
+## Runtime 清理
+
+项目运行和测试会持续写入 `runtime/afsim_runs`、`runtime/afsim_workdirs`、`runtime/workbench/replay_cache` 和部分 `generated_scenarios` 测试场景。使用清理脚本前先 dry-run：
+
+```powershell
+cd D:\AFISM\AFSIM\AFSIM_LLM
+.\scripts\cleanup_runtime.ps1 -KeepRuns 30 -KeepDays 7
+```
+
+默认只列出候选，不会删除。确认输出后再执行：
+
+```powershell
+.\scripts\cleanup_runtime.ps1 -KeepRuns 30 -KeepDays 7 -Apply
+```
+
+清理范围只限本项目 `runtime/` 和 `generated_scenarios/` 下的测试/烟测产物，不会删除 `.env`、源码或 AFSIM 原始安装目录。需要保留的 run 或场景目录可放置 `.keep`、`KEEP`、`keep.txt`、`retain`、`.retain` 或 `_keep` 标记；`run.json` 中设置 `keep/retain/pinned/manual_keep=true` 也会跳过。
+
 ## 下一步
 
 - 扩展 AFSIM 输入语法解析，覆盖更多 `platform_type`、传感器、武器、通信和任务配置。

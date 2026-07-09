@@ -134,7 +134,7 @@ input[type="range"] {
 
 .status-grid {
   display: grid;
-  grid-template-columns: minmax(180px, 1.2fr) minmax(220px, 1.4fr) repeat(8, minmax(86px, 1fr));
+  grid-template-columns: minmax(180px, 1.2fr) minmax(220px, 1.4fr) repeat(9, minmax(86px, 1fr));
   gap: 6px;
   min-width: 0;
 }
@@ -318,7 +318,22 @@ h2 {
 
 .map-toolbar-actions {
   display: flex;
+  align-items: center;
   gap: 6px;
+}
+
+.map-engine-field {
+  display: grid;
+  grid-template-columns: auto minmax(140px, 170px);
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.map-engine-field select {
+  min-height: 30px;
 }
 
 .map-wrap {
@@ -351,6 +366,37 @@ h2 {
 
 .afsim-map-canvas.dragging {
   cursor: grabbing;
+}
+
+.map-adapter-placeholder {
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 100%;
+  min-height: 260px;
+  border: 1px solid rgba(230, 184, 90, 0.32);
+  background: #05080a;
+  color: var(--muted);
+  padding: 24px;
+  text-align: center;
+}
+
+.map-adapter-placeholder strong {
+  color: var(--amber);
+  font-size: 14px;
+}
+
+.map-adapter-placeholder span {
+  max-width: 560px;
+  line-height: 1.45;
+}
+
+.map-adapter-placeholder code {
+  color: #cbe3e1;
+  font-family: Consolas, "Microsoft YaHei", sans-serif;
+  font-size: 11px;
 }
 
 .map-hud-panel {
